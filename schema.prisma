@@ -1,0 +1,864 @@
+// ------------------------------------------------------------
+// Afterlife Service — Prisma Schema (MongoDB)
+// ALL relations explicitly named; enums deduped
+// Posts consolidated; Unified Feeds; Event comments enabled
+// ------------------------------------------------------------
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URI")
+}
+
+// ---------------------- Enums -------------------------------
+
+enum Visibility {
+  PUBLIC
+  UNLISTED
+  PRIVATE
+}
+
+enum MemorialStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum ReviewDecision {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum FundraisingStatus {
+  ACTIVE
+  PAUSED
+  CLOSED
+}
+
+enum DonationStatus {
+  SUCCEEDED
+  REFUNDED
+  FAILED
+  PENDING
+}
+
+enum ContentFormat {
+  IMAGE
+  VIDEO
+  AUDIO
+  TEXT
+  STICKER
+  LIVESTREAM
+}
+
+enum PostStatus {
+  DRAFT
+  PUBLISHED
+  MODERATION_HOLD
+  REMOVED
+}
+
+enum LivestreamState {
+  SCHEDULED
+  LIVE
+  ENDED
+  CANCELED
+}
+
+enum RSVPStatus {
+  GOING
+  MAYBE
+  NOT_GOING
+  WAITLISTED
+  CHECKED_IN
+}
+
+enum FollowTargetType {
+  CREATOR
+  MEMORIAL
+}
+
+enum LikeTargetType {
+  POST
+}
+
+enum CommentTargetType {
+  POST
+  EVENT
+}
+
+enum PostType {
+  TRIBUTE
+  CREATOR
+}
+
+enum FeedType {
+  MEMORIAL
+  USER
+  POST
+  CATEGORY
+  PROXIMITY
+  CUSTOM
+}
+
+enum FeedStatus {
+  ACTIVE
+  EXPIRED
+}
+
+enum FeedEventType {
+  IMPRESSION
+  OPEN
+  SCROLL
+  CLICK
+}
+
+// ---------------------- Users & Sessions --------------------
+
+model User {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  email       String    @unique
+  name        String?
+  dateOfBirth DateTime? @default(now()) // for age-restricted content
+  handle      String?   @unique @default(cuid())
+  imageUrl    String?
+  status      String    @default("ACTIVE")
+  roles       String[]
+  lastLogin   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // relations
+  sessions         Session[]       @relation(name: "UserSessions")
+  creatorProfile   CreatorProfile? @relation(name: "UserCreatorProfile", fields: [creatorProfileId], references: [id])
+  follows          Follow[]        @relation(name: "UserFollows")
+  likes            Like[]          @relation(name: "UserLikes")
+  comments         Comment[]       @relation(name: "UserComments")
+  feeds            Feed[]          @relation(name: "UserFeeds")
+  feedEvents       FeedEvent[]     @relation(name: "FeedEventUser")
+  creatorProfileId String?         @db.ObjectId
+}
+
+model CreatorProfile {
+  id                 String      @id @default(auto()) @map("_id") @db.ObjectId
+  userId             String      @unique
+  handle             String      @unique
+  type               String // "brand" | "individual"
+  bio                String?
+  links              String[]
+  verificationLevel  String? // "none" | "badge" | "partner"
+  status             String      @default("ACTIVE")
+  contentPolicyFlags Json?
+  decorators         Decorator[] @relation(name: "DecoratorCreator")
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  posts     Post[]   @relation(name: "CreatorProfilePosts")
+  followers Follow[] @relation("CreatorFollowers")
+  users     User[]   @relation(name: "UserCreatorProfile")
+}
+
+model Session {
+  id     String @id @default(auto()) @map("_id") @db.ObjectId
+  userId String @db.ObjectId
+  user   User   @relation(name: "UserSessions", fields: [userId], references: [id])
+
+  token     String   @unique
+  expiresAt DateTime
+  userAgent String?
+  ip        String?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, expiresAt])
+}
+
+// ---------------------- Memorials ---------------------------
+
+model Memorial {
+  id                 String             @id @default(auto()) @map("_id") @db.ObjectId
+  slug               String             @unique
+  shortId            String?            @unique
+  ownerUserId        String
+  displayName        String
+  coverAssetUrl      String?
+  coverAssetId       String?            @db.ObjectId
+  salutation         String?
+  yearOfBirth        Int?
+  yearOfPassing      Int?
+  theme              String?            @default("default")
+  location           Location?
+  bioSummary         String?
+  tags               String[]
+  visibility         Visibility         @default(PUBLIC)
+  status             MemorialStatus     @default(ACTIVE)
+  verificationStatus VerificationStatus @default(UNVERIFIED)
+  iosAppUrl          String?
+  androidAppUrl      String?
+  shareUrl           String?
+  shortUrl           String?
+
+  // obituary service integration
+  obituaryId               String? // latest obituary draft ID
+  obituaryServiceSessionId String? // questionnaire session ID
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  archivedAt DateTime?
+
+  // back-relations
+  verificationCase VerificationCase?   @relation(name: "MemorialVerification")
+  fundraising      FundraisingProgram? @relation(name: "MemorialFundraising")
+  postsPrimary     Post[]              @relation(name: "PostMemorialPrimary")
+  postsContext     Post[]              @relation(name: "PostMemorialContext")
+  events           Event[]             @relation(name: "MemorialEvents")
+  feeds            Feed[]              @relation(name: "MemorialFeeds")
+
+  @@index([displayName])
+  @@index([verificationStatus, status])
+  @@index([location])
+}
+
+type Location {
+  googlePlaceId    String?
+  formattedAddress String?
+  lat              Float?
+  lng              Float?
+  city             String?
+  state            String?
+  country          String?
+}
+
+// ---------------------- Verification ------------------------
+
+model VerificationCase {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  memorialId String   @unique @db.ObjectId
+  memorial   Memorial @relation(name: "MemorialVerification", fields: [memorialId], references: [id])
+
+  submittedBy String
+  inputs      VerificationInputs
+  comparison  VerificationComparison?
+
+  status      VerificationStatus @default(PENDING)
+  reasonCodes String[]
+  decidedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  documents      VerificationDoc[]   @relation(name: "VerificationDocuments")
+  providerChecks ProviderCheck[]     @relation(name: "VerificationProviderChecks")
+  manualReviews  ManualReview[]      @relation(name: "VerificationManualReviews")
+  secrets        VerificationSecret? @relation(name: "VerificationSecrets")
+
+  @@index([status])
+}
+
+model VerificationDoc {
+  id             String           @id @default(auto()) @map("_id") @db.ObjectId
+  verificationId String           @db.ObjectId
+  verification   VerificationCase @relation(name: "VerificationDocuments", fields: [verificationId], references: [id])
+
+  assetId        String
+  kind           String // "death_certificate" | "supporting"
+  uploadedAt     DateTime
+  ocrText        String?
+  matchScore     Float?
+  verifiedFields String[]
+}
+
+model ProviderCheck {
+  id             String           @id @default(auto()) @map("_id") @db.ObjectId
+  verificationId String           @db.ObjectId
+  verification   VerificationCase @relation(name: "VerificationProviderChecks", fields: [verificationId], references: [id])
+
+  provider   String
+  requestId  String?
+  matchScore Float?
+  result     String? // "match" | "no_match" | "inconclusive"
+  raw        Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([verificationId, provider])
+}
+
+model ManualReview {
+  id             String           @id @default(auto()) @map("_id") @db.ObjectId
+  verificationId String           @db.ObjectId
+  verification   VerificationCase @relation(name: "VerificationManualReviews", fields: [verificationId], references: [id])
+
+  reviewerUserId String
+  notes          String?
+  decision       ReviewDecision @default(PENDING)
+
+  createdAt DateTime  @default(now())
+  decidedAt DateTime?
+}
+
+model VerificationSecret {
+  id             String           @id @default(auto()) @map("_id") @db.ObjectId
+  verificationId String           @unique @db.ObjectId
+  verification   VerificationCase @relation(name: "VerificationSecrets", fields: [verificationId], references: [id])
+
+  // Encrypted full SSN (TEMPORARY)
+  encFullSsn    String? // base64(ciphertext)
+  encSsnIv      String? // base64(iv)
+  encSsnAuthTag String? // base64(authTag)
+
+  // Hashed identifiers (LONG-TERM)
+  hashedSsn    String? // hash(fullSSN + salt), e.g. Argon2/Bcrypt
+  hashedCertId String? // hash(deathCertificateId + salt)
+
+  // Minimal metadata
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  lastUsedAt DateTime? // last time we actually used encFullSsn for DMF
+}
+
+type VerificationInputs {
+  fullName           String
+  dateOfBirth        DateTime?
+  dateOfPassing      DateTime?
+  ssnLast4           String? // for display/confirmation only
+  certificateNumber  String? // OPTIONAL, for human review; treat as sensitive
+  state              String?
+  county             String?
+  deathCertificateId String? // OPTIONAL external ID (never stored in plaintext long-term)
+}
+
+type VerificationComparison {
+  nameMatchScore         Float?
+  dobMatchScore          Float?
+  dopMatchScore          Float?
+  certificateNumberMatch Float?
+  overallScore           Float?
+  notes                  String?
+}
+
+// ---------------------- Fundraising (mirror) ----------------
+
+model FundraisingProgram {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  memorialId String   @unique @db.ObjectId
+  memorial   Memorial @relation(name: "MemorialFundraising", fields: [memorialId], references: [id])
+
+  purpose                     String
+  goalAmountCents             Int?
+  currentAmountCents          Int               @default(0)
+  currency                    String            @default("USD")
+  status                      FundraisingStatus @default(ACTIVE)
+  feePlanId                   String?
+  connectAccountId            String?
+  beneficiaryType             String?
+  beneficiaryName             String?
+  beneficiaryExternalId       String?
+  beneficiaryOnboardingStatus String?           @default("NOT_STARTED")
+  totalPayoutsCents           Int               @default(0)
+  lastPayoutAt                DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  donations DonationMirror[] @relation(name: "ProgramDonations")
+  payouts   PayoutMirror[]   @relation(name: "ProgramPayouts")
+
+  @@index([status])
+  @@index([beneficiaryOnboardingStatus])
+}
+
+model DonationMirror {
+  id            String             @id @default(auto()) @map("_id") @db.ObjectId
+  fundraisingId String             @db.ObjectId
+  fundraising   FundraisingProgram @relation(name: "ProgramDonations", fields: [fundraisingId], references: [id])
+
+  billingPaymentId String         @unique
+  amountCents      Int
+  currency         String
+  donorDisplay     String?
+  message          String?
+  status           DonationStatus
+  madeAt           DateTime       @default(now())
+
+  @@index([fundraisingId, status])
+  @@index([madeAt])
+}
+
+model PayoutMirror {
+  id            String             @id @default(auto()) @map("_id") @db.ObjectId
+  fundraisingId String             @db.ObjectId
+  fundraising   FundraisingProgram @relation(name: "ProgramPayouts", fields: [fundraisingId], references: [id])
+
+  billingPayoutId    String    @unique
+  amountCents        Int
+  currency           String
+  status             String
+  initiatedAt        DateTime
+  completedAt        DateTime?
+  failureReason      String?
+  destinationSummary String?
+  metadata           Json?
+
+  @@index([fundraisingId, status])
+  @@index([initiatedAt])
+}
+
+// ---------------------- Posts (Consolidated) ----------------
+
+model Post {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  type PostType // TRIBUTE | CREATOR
+
+  // authorship
+  authorUserId String?         @db.ObjectId
+  // optional creator profile (for CREATOR posts)
+  creatorId    String?         @db.ObjectId
+  creator      CreatorProfile? @relation(name: "CreatorProfilePosts", fields: [creatorId], references: [id])
+
+  // memorial links
+  memorialId String?   @db.ObjectId // primary memorial (TRIBUTE)
+  memorial   Memorial? @relation(name: "PostMemorialPrimary", fields: [memorialId], references: [id])
+
+  memorialContextId String?   @db.ObjectId // optional targeting for CREATOR posts
+  memorialContext   Memorial? @relation(name: "PostMemorialContext", fields: [memorialContextId], references: [id])
+
+  // content
+  title            String?
+  caption          String?
+  body             String?
+  composition      PostComposition?
+  assetRefs        String[] // content-service assets
+  thumbnailAssetId String?
+  thumbnailUrl     String?
+  categories       String[]
+  tags             String[]
+  durationMs       Int?
+
+  visibility  Visibility @default(PUBLIC)
+  status      PostStatus @default(DRAFT)
+  publishedAt DateTime?
+
+  metrics PostMetrics?
+
+  // livestream back-rel (FK on LivestreamSession)
+  livestream LivestreamSession? @relation(name: "PostLivestream")
+
+  // feed entries and analytics back-relations
+  feedEntries FeedEntry[] @relation(name: "FeedPostEntries")
+  feedEvents  FeedEvent[] @relation(name: "FeedEventPost")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  feeds     Feed[]   @relation(name: "PostFeeds")
+
+  @@index([type, status, publishedAt])
+  @@index([memorialId, publishedAt])
+  @@index([memorialContextId, publishedAt])
+}
+
+type PostComposition {
+  baseMedia BaseMedia?
+  overlays  Overlay[]
+  filter    PostFilter?
+  version   Int?
+}
+
+type BaseMedia {
+  type        String // "image" | "video"
+  assetId     String?
+  url         String?
+  aspectRatio Float?
+  scale       Float?
+  x           Float?
+  y           Float?
+}
+
+type Overlay {
+  id       String?
+  type     String // "text" | "sticker"
+  assetId  String?
+  text     String?
+  x        Float
+  y        Float
+  scale    Float?
+  rotation Float?
+  color    String?
+  zIndex   Int?
+}
+
+type PostFilter {
+  id        String
+  intensity Float
+}
+
+type StoryLayer {
+  id        String        @default(uuid())
+  type      ContentFormat
+  assetId   String?
+  text      String?
+  startMs   Int?
+  endMs     Int?
+  transform Json?
+  style     Json?
+  zIndex    Int?
+  extras    Json?
+}
+
+type PostMetrics {
+  impressions Int @default(0)
+  clicks      Int @default(0)
+  watchTimeMs Int @default(0)
+  likes       Int @default(0) // can mirror counts from Like
+  flags       Int @default(0)
+}
+
+// ---------------------- Consolidated Follows / Likes / Comments ----
+
+model Follow {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  userId String @db.ObjectId
+  user   User   @relation(name: "UserFollows", fields: [userId], references: [id])
+
+  targetType    FollowTargetType // CREATOR | MEMORIAL
+  targetId      String           @db.ObjectId
+  notifications String?
+
+  createdAt        DateTime        @default(now())
+  creatorProfile   CreatorProfile? @relation(name: "CreatorFollowers", fields: [creatorProfileId], references: [id])
+  creatorProfileId String?         @db.ObjectId
+
+  @@unique([userId, targetType, targetId])
+  @@index([targetType, targetId])
+}
+
+model Like {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  userId String @db.ObjectId
+  user   User   @relation(name: "UserLikes", fields: [userId], references: [id])
+
+  targetType LikeTargetType // POST
+  targetId   String         @db.ObjectId // Post.id
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, targetType, targetId])
+  @@index([targetType, targetId])
+}
+
+model Comment {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  authorUserId String @db.ObjectId
+  author       User   @relation(name: "UserComments", fields: [authorUserId], references: [id])
+
+  targetType CommentTargetType // POST | EVENT
+  targetId   String            @db.ObjectId // Post.id or Event.id
+
+  body      String
+  status    String   @default("VISIBLE") // or MODERATED/REMOVED
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  parentCommentId String? @db.ObjectId
+
+  @@index([targetType, targetId, createdAt])
+  @@index([authorUserId, createdAt])
+}
+
+// ---------------------- Livestreams --------------------------
+
+model LivestreamSession {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  // FK lives here; back-rel on Post/Event
+  postId String? @unique @db.ObjectId
+  post   Post?   @relation(name: "PostLivestream", fields: [postId], references: [id])
+
+  eventId String? @unique @db.ObjectId
+  event   Event?  @relation(name: "EventLivestream", fields: [eventId], references: [id])
+
+  state       LivestreamState  @default(SCHEDULED)
+  ingest      LivestreamIngest
+  playbackUrl String?
+
+  startScheduledAt DateTime?
+  startedAt        DateTime?
+  endedAt          DateTime?
+
+  viewerCount Int      @default(0)
+  extras      Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([state])
+}
+
+type LivestreamIngest {
+  url      String?
+  key      String?
+  protocol String? // "rtmp" | "webrtc"
+}
+
+// ---------------------- Events & RSVPs -----------------------
+
+model Event {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  memorialId String   @db.ObjectId
+  memorial   Memorial @relation(name: "MemorialEvents", fields: [memorialId], references: [id])
+
+  inMemoryOf  String?
+  eventType   String
+  title       String
+  description String?
+
+  startAt  DateTime
+  endAt    DateTime
+  timezone String
+
+  location        EventLocation
+  visibility      Visibility    @default(PUBLIC)
+  capacity        Int?
+  waitlistEnabled Boolean       @default(false)
+
+  hostUserId String
+  coHosts    String[]
+
+  // livestream back-relation (FK on LivestreamSession)
+  livestream LivestreamSession? @relation(name: "EventLivestream")
+
+  status    String   @default("PUBLISHED")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  rsvps RSVP[]       @relation(name: "EventRsvps")
+  media EventMedia[] @relation(name: "EventMediaItems")
+
+  // comments on events via consolidated Comment target (no hard FK)
+  // (Optionally, you can maintain a denormalized commentsCount int here.)
+
+  @@index([memorialId, startAt])
+  @@index([visibility, startAt])
+}
+
+type EventLocation {
+  kind             String // "physical" | "virtual" | "hybrid"
+  googlePlaceId    String?
+  formattedAddress String?
+  lat              Float?
+  lng              Float?
+  joinUrl          String?
+}
+
+model RSVP {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  eventId String @db.ObjectId
+  event   Event  @relation(name: "EventRsvps", fields: [eventId], references: [id])
+
+  userId      String?
+  email       String?
+  status      RSVPStatus @default(GOING)
+  guestsCount Int        @default(1)
+  notes       String?
+
+  checkin   Checkin?
+  createdAt DateTime @default(now())
+
+  @@index([eventId, status])
+  @@index([email])
+}
+
+type Checkin {
+  at DateTime?
+  by String? // staff/co-host userId
+}
+
+model EventMedia {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  eventId String @db.ObjectId
+  event   Event  @relation(name: "EventMediaItems", fields: [eventId], references: [id])
+
+  assetId   String // Content Service asset id (program, gallery, recording)
+  kind      String // "program" | "gallery" | "recording"
+  createdAt DateTime @default(now())
+
+  @@index([eventId, kind])
+}
+
+// ---------------------- Unified Feeds -----------------------
+
+model Feed {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  type FeedType
+
+  // Optional scope — set based on type
+  ownerUserId String? @db.ObjectId
+  ownerUser   User?   @relation(name: "UserFeeds", fields: [ownerUserId], references: [id])
+
+  memorialId String?   @db.ObjectId
+  memorial   Memorial? @relation(name: "MemorialFeeds", fields: [memorialId], references: [id])
+
+  postId String? @db.ObjectId
+  post   Post?   @relation(name: "PostFeeds", fields: [postId], references: [id])
+
+  category  String?
+  filter    Json?
+  proximity Proximity?
+
+  status       FeedStatus @default(ACTIVE)
+  feedKey      String?    @unique
+  expiresAt    DateTime?
+  refreshAfter DateTime?
+
+  title       String?
+  description String?
+  extras      Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entries FeedEntry[] @relation(name: "FeedEntries")
+  events  FeedEvent[] @relation(name: "FeedEvents")
+
+  @@index([type])
+  @@index([status, expiresAt])
+  @@index([ownerUserId, type])
+  @@index([memorialId, type])
+  @@index([postId, type])
+  @@index([category, type])
+}
+
+type Proximity {
+  lat     Float
+  lng     Float
+  radiusM Int
+}
+
+model FeedEntry {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  feedId String @db.ObjectId
+  feed   Feed   @relation(name: "FeedEntries", fields: [feedId], references: [id])
+
+  postId String @db.ObjectId
+  post   Post   @relation(name: "FeedPostEntries", fields: [postId], references: [id])
+
+  publishedAt DateTime
+  score       Float?
+  reasons     String[]
+
+  createdAt DateTime @default(now())
+
+  @@index([feedId, publishedAt])
+  @@index([postId])
+  @@index([score])
+}
+
+model FeedEvent {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  feedId String @db.ObjectId
+  feed   Feed   @relation(name: "FeedEvents", fields: [feedId], references: [id])
+
+  postId String? @db.ObjectId
+  post   Post?   @relation(name: "FeedEventPost", fields: [postId], references: [id])
+
+  userId String? @db.ObjectId
+  user   User?   @relation(name: "FeedEventUser", fields: [userId], references: [id])
+
+  eventType FeedEventType
+  at        DateTime      @default(now())
+
+  sessionId String?
+  device    String?
+  extras    Json?
+
+  @@index([feedId, at])
+  @@index([eventType, at])
+  @@index([userId, at])
+  @@index([postId, at])
+}
+
+model FeedDailyStats {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  feedId      String   @db.ObjectId
+  date        DateTime
+  impressions Int      @default(0)
+  opens       Int      @default(0)
+  scrolls     Int      @default(0)
+  clicks      Int      @default(0)
+  byType      Json?
+
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@unique([feedId, date])
+  @@index([date])
+}
+
+enum DecoratorType {
+  STICKER
+  FILTER
+  SOUND
+  BACKGROUND
+  OTHER
+}
+
+enum DecoratorSource {
+  SYSTEM
+  CREATOR
+  SPONSORED
+}
+
+// for the story creation toolkit
+model Decorator {
+  id          String          @id @default(auto()) @map("_id") @db.ObjectId
+  type        DecoratorType   @default(OTHER)
+  source      DecoratorSource @default(SYSTEM)
+  creatorId   String?         @db.ObjectId
+  creator     CreatorProfile? @relation(name: "DecoratorCreator", fields: [creatorId], references: [id])
+  assetId     String
+  assetUrl    String
+  width       Int?
+  height      Int?
+  tags        String[]
+  metadata    Json?
+  priority    Int             @default(0)
+  publishedAt DateTime        @default(now())
+  expiredAt   DateTime?
+
+  @@index([type])
+}
+
+// ---------------------- Audit & Logs -------------------------
+
+model AuditLog {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  subjectType String // "Memorial" | "VerificationCase" | "Post" | "Event" | ...
+  subjectId   String
+  actorUserId String?
+  action      String
+  payload     Json?
+  createdAt   DateTime @default(now())
+
+  @@index([subjectType, subjectId, createdAt])
+}

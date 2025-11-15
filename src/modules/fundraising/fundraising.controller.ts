@@ -1,0 +1,214 @@
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Param,
+  Body,
+  Query,
+  UseGuards,
+  Headers,
+  Logger,
+} from "@nestjs/common";
+import { FundraisingService } from "./fundraising.service";
+import { JwtAuthGuard } from "../auth/jwt-auth.guard";
+import { CurrentUser } from "../auth/current-user.decorator";
+import {
+  CreateFundraisingProgramDto,
+  UpdateFundraisingProgramDto,
+  CreateDonationCheckoutDto,
+  CreateDonationPaymentIntentDto,
+  StartBeneficiaryOnboardingDto,
+  RequestPayoutDto,
+  FundraisingProgramSummaryDto,
+  DonationListItemDto,
+  PayoutListItemDto,
+  BeneficiaryStatusDto,
+} from "./dto/fundraising.dto";
+import { FundraisingProgram } from "@prisma/client";
+
+interface User {
+  userId: string;
+  email: string;
+}
+
+@Controller("fundraising")
+@UseGuards(JwtAuthGuard)
+export class FundraisingController {
+  private readonly logger = new Logger(FundraisingController.name);
+
+  constructor(private readonly fundraisingService: FundraisingService) {}
+
+  @Post("programs")
+  async createProgram(
+    @Body() dto: CreateFundraisingProgramDto,
+    @CurrentUser() user: User,
+  ): Promise<FundraisingProgram> {
+    this.logger.debug("Creating fundraising program", {
+      memorialId: dto.memorialId,
+      userId: user.userId,
+    });
+
+    return this.fundraisingService.createProgram(dto, user.userId);
+  }
+
+  @Get("programs/:memorialId")
+  async getProgram(
+    @Param("memorialId") memorialId: string,
+  ): Promise<FundraisingProgram | null> {
+    this.logger.debug("Getting fundraising program", { memorialId });
+
+    return this.fundraisingService.getProgramByMemorial(memorialId);
+  }
+
+  @Patch("programs/:memorialId")
+  async updateProgram(
+    @Param("memorialId") memorialId: string,
+    @Body() dto: UpdateFundraisingProgramDto,
+    @CurrentUser() user: User,
+  ): Promise<FundraisingProgram> {
+    this.logger.debug("Updating fundraising program", {
+      memorialId,
+      userId: user.userId,
+    });
+
+    return this.fundraisingService.updateProgram(memorialId, dto, user.userId);
+  }
+
+  @Get("programs/:memorialId/summary")
+  async getSummary(
+    @Param("memorialId") memorialId: string,
+  ): Promise<FundraisingProgramSummaryDto> {
+    this.logger.debug("Getting fundraising summary", { memorialId });
+
+    return this.fundraisingService.computeSummary(memorialId);
+  }
+
+  @Get("programs/:memorialId/donations")
+  async listDonations(
+    @Param("memorialId") memorialId: string,
+    @Query("limit") limit?: string,
+    @Query("cursor") cursor?: string,
+  ): Promise<DonationListItemDto[]> {
+    const parsedLimit = limit ? Number.parseInt(limit, 10) : 20;
+
+    this.logger.debug("Listing donations", {
+      memorialId,
+      limit: parsedLimit,
+      cursor,
+    });
+
+    return this.fundraisingService.listDonations(
+      memorialId,
+      parsedLimit,
+      cursor,
+    );
+  }
+
+  @Post("programs/:memorialId/checkout")
+  async createCheckout(
+    @Param("memorialId") memorialId: string,
+    @Body() dto: CreateDonationCheckoutDto,
+    @CurrentUser() user: User,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ): Promise<{ checkoutUrl: string; paymentId: string }> {
+    this.logger.debug("Creating donation checkout", {
+      memorialId,
+      amountCents: dto.amountCents,
+      userId: user.userId,
+    });
+
+    return this.fundraisingService.createCheckout(
+      memorialId,
+      dto,
+      user.userId,
+      idempotencyKey,
+    );
+  }
+
+  @Post("programs/:memorialId/payment-intent")
+  async createPaymentIntent(
+    @Param("memorialId") memorialId: string,
+    @Body() dto: CreateDonationPaymentIntentDto,
+    @CurrentUser() user: User,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ): Promise<{
+    paymentIntentId: string;
+    clientSecret: string;
+    publishableKey: string;
+    ephemeralKey?: string;
+  }> {
+    this.logger.debug("Creating donation payment intent", {
+      memorialId,
+      amountCents: dto.amountCents,
+      userId: user.userId,
+    });
+
+    return this.fundraisingService.createPaymentIntent(
+      memorialId,
+      dto,
+      user.userId,
+      idempotencyKey,
+    );
+  }
+
+  @Post("programs/:memorialId/beneficiary/start-onboarding")
+  async startBeneficiaryOnboarding(
+    @Param("memorialId") memorialId: string,
+    @Body() dto: StartBeneficiaryOnboardingDto,
+    @CurrentUser() user: User,
+  ): Promise<{ onboardingUrl: string; beneficiaryOnboardingStatus: string }> {
+    this.logger.debug("Starting beneficiary onboarding", {
+      memorialId,
+      beneficiaryType: dto.beneficiaryType,
+      userId: user.userId,
+    });
+
+    return this.fundraisingService.startBeneficiaryOnboarding(
+      memorialId,
+      dto,
+      user.userId,
+    );
+  }
+
+  @Get("programs/:memorialId/beneficiary")
+  async getBeneficiaryStatus(
+    @Param("memorialId") memorialId: string,
+  ): Promise<BeneficiaryStatusDto> {
+    this.logger.debug("Getting beneficiary status", { memorialId });
+
+    return this.fundraisingService.getBeneficiaryStatus(memorialId);
+  }
+
+  @Post("programs/:memorialId/payouts")
+  async requestPayout(
+    @Param("memorialId") memorialId: string,
+    @Body() dto: RequestPayoutDto,
+    @CurrentUser() user: User,
+  ): Promise<PayoutListItemDto> {
+    this.logger.debug("Requesting payout", {
+      memorialId,
+      amountCents: dto.amountCents,
+      userId: user.userId,
+    });
+
+    return this.fundraisingService.requestPayout(memorialId, dto, user.userId);
+  }
+
+  @Get("programs/:memorialId/payouts")
+  async listPayouts(
+    @Param("memorialId") memorialId: string,
+    @Query("limit") limit?: string,
+    @Query("cursor") cursor?: string,
+  ): Promise<PayoutListItemDto[]> {
+    const parsedLimit = limit ? Number.parseInt(limit, 10) : 20;
+
+    this.logger.debug("Listing payouts", {
+      memorialId,
+      limit: parsedLimit,
+      cursor,
+    });
+
+    return this.fundraisingService.listPayouts(memorialId, parsedLimit, cursor);
+  }
+}
