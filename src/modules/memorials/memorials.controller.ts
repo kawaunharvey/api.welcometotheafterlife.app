@@ -510,6 +510,44 @@ export class MemorialsController {
   }
 
   /**
+   * Generate caption variants for a memorial's draft
+   */
+  @Post(":id/obituary/draft/:draftId/captions")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Generate captions for an obituary draft" })
+  async generateCaptions(
+    @Param("id") memorialId: string,
+    @Param("draftId") draftId: string,
+    @CurrentUser() user: CurrentUserContext,
+  ) {
+    return this.memorialObituaryService.generateDraftCaptions(
+      memorialId,
+      draftId,
+      user.userId,
+    );
+  }
+
+  /**
+   * Get caption variants for a memorial's draft
+   */
+  @Get(":id/obituary/draft/:draftId/captions")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get captions for an obituary draft" })
+  async getCaptions(
+    @Param("id") memorialId: string,
+    @Param("draftId") draftId: string,
+    @CurrentUser() user: CurrentUserContext,
+  ) {
+    return this.memorialObituaryService.getDraftCaptions(
+      memorialId,
+      draftId,
+      user.userId,
+    );
+  }
+
+  /**
    * Publish a generated obituary draft and store the published copy
    */
   @Post(":id/obituary/draft/:draftId/publish")

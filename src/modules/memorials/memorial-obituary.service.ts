@@ -6,6 +6,7 @@ import {
   GetDraftResponse,
   QuestionnaireSessionResponse,
   UpdateKeyLocationsRequest,
+  CaptionResponse,
 } from "../../common";
 import { ObituaryCacheService } from "../../common";
 import { MemorialsService } from "./memorials.service";
@@ -502,6 +503,72 @@ export class MemorialObituaryService {
   }
 
   /**
+   * Generate caption variants for a draft tied to a memorial
+   */
+  async generateDraftCaptions(
+    memorialId: string,
+    draftId: string,
+    userId: string,
+  ): Promise<CaptionResponse> {
+    await this.ensureDraftBelongsToMemorial(memorialId, draftId, userId);
+
+    const response = await this.obituaryClient.generateCaptions(draftId);
+    this.logger.log(
+      `Generated captions for draft ${draftId} (memorial ${memorialId})`,
+    );
+
+    await this.obituaryCache.cacheDraftCaptions(draftId, response);
+
+    return response;
+  }
+
+  /**
+   * Get stored caption variants for a draft tied to a memorial
+   */
+  async getDraftCaptions(
+    memorialId: string,
+    draftId: string,
+    userId: string,
+  ): Promise<CaptionResponse> {
+    await this.ensureDraftBelongsToMemorial(memorialId, draftId, userId);
+
+    this.logger.debug(
+      `Fetching captions for draft ${draftId} (memorial ${memorialId})`,
+    );
+
+    const cached = await this.obituaryCache.getCachedDraftCaptions(draftId);
+    if (cached) {
+      return cached;
+    }
+
+    try {
+      const captions = await this.obituaryClient.getCaptions(draftId);
+      await this.obituaryCache.cacheDraftCaptions(draftId, captions);
+      return captions;
+    } catch (error: any) {
+      const status = error?.response?.status;
+
+      // If captions haven't been generated yet, return an empty set instead of throwing
+      if (status === 404) {
+        this.logger.warn(
+          `Captions not found upstream for draft ${draftId}; returning empty set`,
+        );
+        const empty: CaptionResponse = {
+          draftId,
+          captions: [],
+          createdAt: new Date().toISOString(),
+        };
+
+        // Cache empty result briefly to avoid repeated upstream lookups
+        await this.obituaryCache.cacheDraftCaptions(draftId, empty, 60);
+        return empty;
+      }
+
+      throw error;
+    }
+  }
+
+  /**
    * Publish a generated draft into the afterlife service store
    */
   async publishDraft(memorialId: string, draftId: string, userId: string) {
@@ -604,6 +671,25 @@ export class MemorialObituaryService {
     }
 
     return draft;
+  }
+
+  private async ensureDraftBelongsToMemorial(
+    memorialId: string,
+    draftId: string,
+    userId: string,
+  ) {
+    const memorial = await this.memorialsService.getById(memorialId, userId);
+    const draft = await this.getDraft(draftId);
+
+    if (
+      memorial.obituaryServiceSessionId &&
+      draft.sessionId &&
+      memorial.obituaryServiceSessionId !== draft.sessionId
+    ) {
+      throw new NotFoundException("Draft does not belong to this memorial");
+    }
+
+    return { memorial, draft };
   }
 
   /**

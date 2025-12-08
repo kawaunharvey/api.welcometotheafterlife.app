@@ -206,6 +206,22 @@ export interface EstimateCostResponse {
   };
 }
 
+// ==================== Captions Types ====================
+
+export interface CaptionVariant {
+  slug: string;
+  text: string;
+  wordCount: number;
+  sentenceCount: number;
+  tone?: string;
+}
+
+export interface CaptionResponse {
+  draftId: string;
+  captions: CaptionVariant[];
+  createdAt: string;
+}
+
 // ==================== Authentication Types ====================
 
 export interface ClientInfo {
@@ -551,6 +567,49 @@ export class ObituaryServiceClient {
     );
 
     return "draft" in response ? response.draft : response;
+  }
+
+  /**
+   * Generate caption variants for a draft
+   */
+  async generateCaptions(draftId: string): Promise<CaptionResponse> {
+    const headers = await this.getHeaders();
+    return this.retryableRequest<CaptionResponse>(
+      () =>
+        this.httpService
+          .post<CaptionResponse>(
+            `${this.baseUrl}/draft/${draftId}/captions`,
+            {},
+            headers,
+          )
+          .toPromise(),
+      "generateCaptions",
+    );
+  }
+
+  /**
+   * Get generated caption variants for a draft
+   */
+  async getCaptions(draftId: string): Promise<CaptionResponse> {
+    const headers = await this.getHeaders();
+    try {
+      return await this.retryableRequest<CaptionResponse>(
+        () =>
+          this.httpService
+            .get<CaptionResponse>(
+              `${this.baseUrl}/draft/${draftId}/captions`,
+              headers,
+            )
+            .toPromise(),
+        "getCaptions",
+      );
+    } catch (error: any) {
+      const status = error?.response?.status;
+      this.logger.warn(
+        `[getCaptions] upstream request failed for draft ${draftId}${status ? ` (status ${status})` : ""}`,
+      );
+      throw error;
+    }
   }
 
   /**

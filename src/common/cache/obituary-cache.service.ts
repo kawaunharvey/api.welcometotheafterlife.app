@@ -5,6 +5,7 @@ import {
   GetDraftResponse,
   QuestionnaireSessionResponse,
   CurrentQuestionResponse,
+  CaptionResponse,
 } from "../http-client/obituary-service.client";
 
 export interface ObituaryCacheKeys {
@@ -12,6 +13,7 @@ export interface ObituaryCacheKeys {
   DRAFT_BY_ID: (draftId: string) => string;
   LATEST_DRAFT_BY_SESSION: (sessionId: string) => string;
   SESSION_DRAFTS: (sessionId: string) => string;
+  DRAFT_CAPTIONS: (draftId: string) => string;
 
   // Questionnaire cache keys
   QUESTIONNAIRE_SESSION: (sessionId: string) => string;
@@ -31,6 +33,7 @@ export class ObituaryCacheService {
     DRAFT: 24 * 60 * 60, // 24 hours - drafts are relatively stable
     LATEST_DRAFT: 2 * 60 * 60, // 2 hours - may change as new drafts are created
     SESSION_DRAFTS: 30 * 60, // 30 minutes - list may change frequently
+    DRAFT_CAPTIONS: 15 * 60, // 15 minutes - captions rarely change but avoid staleness
     QUESTIONNAIRE_SESSION: 60 * 60, // 1 hour - session state changes moderately
     CURRENT_QUESTION: 10 * 60, // 10 minutes - changes as questions are answered
     MEMORIAL_OBITUARY: 6 * 60 * 60, // 6 hours - memorial obituary association
@@ -44,6 +47,7 @@ export class ObituaryCacheService {
       `obituary:session:${sessionId}:latest-draft`,
     SESSION_DRAFTS: (sessionId: string) =>
       `obituary:session:${sessionId}:drafts`,
+    DRAFT_CAPTIONS: (draftId: string) => `obituary:draft:${draftId}:captions`,
     QUESTIONNAIRE_SESSION: (sessionId: string) =>
       `obituary:questionnaire:${sessionId}`,
     CURRENT_QUESTION: (sessionId: string) =>
@@ -98,6 +102,43 @@ export class ObituaryCacheService {
       this.logger.debug(`Cache hit for draft ${draftId}`);
     } else {
       this.logger.debug(`Cache miss for draft ${draftId}`);
+    }
+
+    return result;
+  }
+
+  /**
+   * Cache caption variants for a draft
+   */
+  async cacheDraftCaptions(
+    draftId: string,
+    captions: CaptionResponse,
+    ttlSeconds?: number,
+  ): Promise<void> {
+    const key = this.KEYS.DRAFT_CAPTIONS(draftId);
+    const tags = [this.CACHE_TAGS.DRAFT(draftId), this.CACHE_TAGS.OBITUARY];
+
+    await this.cache.set(key, captions, {
+      ttl: ttlSeconds ?? this.CACHE_TTL.DRAFT_CAPTIONS,
+      tags,
+    });
+
+    this.logger.debug(`Cached captions for draft ${draftId}`);
+  }
+
+  /**
+   * Get cached captions for a draft
+   */
+  async getCachedDraftCaptions(
+    draftId: string,
+  ): Promise<CaptionResponse | null> {
+    const key = this.KEYS.DRAFT_CAPTIONS(draftId);
+    const result = await this.cache.get<CaptionResponse>(key);
+
+    if (result) {
+      this.logger.debug(`Cache hit for captions of draft ${draftId}`);
+    } else {
+      this.logger.debug(`Cache miss for captions of draft ${draftId}`);
     }
 
     return result;
