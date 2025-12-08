@@ -1,6 +1,5 @@
 import {
   Injectable,
-  BadRequestException,
   ForbiddenException,
   NotFoundException,
   Logger,
@@ -14,7 +13,6 @@ import {
   PostResponseDto,
   ListPostsQueryDto,
 } from "./dto/post.dto";
-import { ContentServiceClient } from "../../common/http-client/content-service.client";
 import { PostStatus, Visibility, Post, Memorial } from "@prisma/client";
 
 @Injectable()
@@ -25,7 +23,6 @@ export class PostsService {
     private prisma: PrismaService,
     private feedsService: FeedsService,
     private auditService: AuditService,
-    private contentServiceClient: ContentServiceClient,
   ) {}
 
   async createTributePost(
@@ -48,34 +45,18 @@ export class PostsService {
       }
     }
 
-    if (dto.composition) {
-      if (dto.composition.baseMedia) {
-        const baseMedia = dto.composition.baseMedia;
-        if (
-          ["image", "video"].includes(baseMedia.type) &&
-          !baseMedia.assetId &&
-          !baseMedia.url
-        ) {
-          throw new BadRequestException(
-            `Base media of type ${baseMedia.type} must have an assetId or url`,
-          );
-        }
-      }
-    }
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const post = await this.prisma.post.create({
       data: {
-        type: "TRIBUTE",
         authorUserId: userId,
         memorialId: dto.memorialId,
-        title: dto.title,
         caption: dto.caption,
-        composition: dto.composition || null,
-        assetRefs: dto.assetRefs || [],
         tags: dto.tags || [],
-        categories: dto.categories || [],
         visibility: dto.visibility || Visibility.PUBLIC,
+        baseMedia: {
+          url: dto.baseMedia.url,
+          assetId: dto.baseMedia.assetId,
+          mediaType: dto.baseMedia.mediaType,
+        },
         status: dto.status || PostStatus.DRAFT,
         publishedAt: dto.status === PostStatus.PUBLISHED ? new Date() : null,
         metrics: {
@@ -101,12 +82,6 @@ export class PostsService {
       action: "CREATE_TRIBUTE",
       payload: { memorialId: memorial?.id, status: post.status },
     });
-
-    if (dto.assetRefs && dto.assetRefs.length > 0) {
-      this.fetchOcrAsync(post.id, dto.assetRefs).catch((err) =>
-        this.logger.warn("OCR fetch failed", err),
-      );
-    }
 
     return this.mapToResponse(post);
   }
@@ -142,12 +117,8 @@ export class PostsService {
     const updated = await this.prisma.post.update({
       where: { id: postId },
       data: {
-        title: dto.title ?? post.title,
         caption: dto.caption ?? post.caption,
-        composition: dto.composition ?? post.composition,
-        assetRefs: dto.assetRefs ?? post.assetRefs,
         tags: dto.tags ?? post.tags,
-        categories: dto.categories ?? post.categories,
         visibility: dto.visibility ?? post.visibility,
         status: dto.status ?? post.status,
         publishedAt: isPublishing ? new Date() : post.publishedAt,
@@ -200,37 +171,14 @@ export class PostsService {
     return posts.map((post) => this.mapToResponse(post));
   }
 
-  private async fetchOcrAsync(
-    postId: string,
-    assetIds: string[],
-  ): Promise<void> {
-    try {
-      for (const assetId of assetIds) {
-        try {
-          await this.contentServiceClient.getAsset(assetId);
-        } catch (err) {
-          this.logger.debug(`Could not fetch OCR for asset ${assetId}`, err);
-        }
-      }
-    } catch (err) {
-      this.logger.warn("Failed to fetch OCR text", err);
-    }
-  }
-
   private mapToResponse(post: Post): PostResponseDto {
     const metrics = post.metrics as Record<string, number>;
     return {
       id: post.id,
-      type: post.type,
       authorUserId: post.authorUserId || "",
       memorialId: post.memorialId || "",
-      title: post.title ?? undefined,
       caption: post.caption ?? undefined,
-      composition:
-        (post.composition as Record<string, unknown> | null) || undefined,
-      assetRefs: post.assetRefs,
       tags: post.tags,
-      categories: post.categories,
       visibility: post.visibility,
       status: post.status,
       publishedAt: post.publishedAt?.toISOString(),

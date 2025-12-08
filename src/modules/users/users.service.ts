@@ -60,9 +60,6 @@ export class UsersService {
     // Fetch user with creator profile
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      include: {
-        creatorProfile: true,
-      },
     });
 
     if (!user) {
@@ -73,12 +70,7 @@ export class UsersService {
     // We need to count both direct posts by userId and posts through creator profile
     const tributeCount = await this.prisma.post.count({
       where: {
-        OR: [
-          { authorUserId: userId },
-          {
-            AND: [{ creatorId: user.creatorProfileId }, { type: "TRIBUTE" }],
-          },
-        ],
+        OR: [{ authorUserId: userId }],
         status: { not: "REMOVED" }, // Exclude removed posts
       },
     });
@@ -107,18 +99,6 @@ export class UsersService {
       updatedAt: user.updatedAt,
       totalTributes: tributeCount,
       totalMemorials: memorialCount,
-      creatorProfile: user.creatorProfile
-        ? {
-            id: user.creatorProfile.id,
-            handle: user.creatorProfile.handle,
-            type: user.creatorProfile.type,
-            bio: user.creatorProfile.bio || undefined,
-            links: user.creatorProfile.links,
-            verificationLevel:
-              user.creatorProfile.verificationLevel || undefined,
-            status: user.creatorProfile.status,
-          }
-        : undefined,
     };
 
     return response;
@@ -161,7 +141,7 @@ export class UsersService {
       // Fetch user to get creator profile ID
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
-        select: { id: true, creatorProfileId: true },
+        select: { id: true },
       });
 
       if (!user) {
@@ -172,15 +152,7 @@ export class UsersService {
       const [tributeCount, memorialCount] = await Promise.all([
         this.prisma.post.count({
           where: {
-            OR: [
-              { authorUserId: userId },
-              {
-                AND: [
-                  { creatorId: user.creatorProfileId },
-                  { type: "TRIBUTE" },
-                ],
-              },
-            ],
+            OR: [{ authorUserId: userId }],
             status: { not: "REMOVED" },
           },
         }),
@@ -277,7 +249,7 @@ export class UsersService {
       // Fetch user to get creator profile ID if needed
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
-        select: { id: true, creatorProfileId: true },
+        select: { id: true },
       });
 
       if (!user) {
@@ -286,15 +258,7 @@ export class UsersService {
 
       // Build where clause for posts
       const whereClause = {
-        OR: [
-          { authorUserId: userId },
-          {
-            AND: [
-              { creatorId: user.creatorProfileId },
-              { type: "TRIBUTE" as const },
-            ],
-          },
-        ],
+        OR: [{ authorUserId: userId }],
         status: { not: "REMOVED" as const },
         publishedAt: { not: null }, // Only published posts
       };
@@ -306,11 +270,11 @@ export class UsersService {
           where: whereClause,
           select: {
             id: true,
-            title: true,
-            thumbnailUrl: true,
-            type: true,
             publishedAt: true,
             createdAt: true,
+            baseMedia: true,
+            thumbnail: true,
+            caption: true,
           },
           orderBy: { publishedAt: "desc" },
           skip,
@@ -323,9 +287,9 @@ export class UsersService {
       return {
         posts: posts.map((post) => ({
           id: post.id,
-          title: post.title || undefined,
-          thumbnailUrl: post.thumbnailUrl || undefined,
-          type: post.type,
+          baseMediaUrl: post.baseMedia?.url,
+          caption: post.caption,
+          thumbnailUrl: post.thumbnail?.url,
           publishedAt: post.publishedAt!,
           createdAt: post.createdAt,
         })),

@@ -1,7 +1,8 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { HttpException, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { HttpService } from "@nestjs/axios";
 import { firstValueFrom } from "rxjs";
+import { AxiosError } from "axios";
 
 export interface CreateCheckoutRequest {
   kind: "donation";
@@ -55,10 +56,71 @@ export interface CreateBeneficiaryRequest {
   beneficiaryType: string;
   beneficiaryName: string;
   email?: string;
+  phone?: string;
+  ssnLast4?: string;
+  dobDay?: number;
+  dobMonth?: number;
+  dobYear?: number;
+  addressLine1?: string;
+  addressLine2?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
+  businessName?: string;
+  businessWebsite?: string;
+  statementDescriptor?: string;
+  tosDate?: number;
+  tosIp?: string;
   metadata: {
     afterlifeMemorialId: string;
     afterlifeFundraisingId: string;
   };
+}
+
+export interface CreateFinancialConnectionsSessionRequest {
+  connectAccountId: string;
+  returnUrl?: string;
+}
+
+export interface CreateFinancialConnectionsSessionResponse {
+  sessionId: string;
+  clientSecret: string;
+  livemode: boolean;
+  connectAccountId: string;
+}
+
+export interface GetFinancialConnectionsSessionRequest {
+  connectAccountId: string;
+  sessionId: string;
+}
+
+export interface GetFinancialConnectionsSessionResponse {
+  sessionId: string;
+  accounts: unknown[];
+  livemode: boolean;
+}
+
+export interface AttachFinancialConnectionRequest {
+  connectAccountId: string;
+  paymentMethodId: string;
+  customerId: string;
+}
+
+export interface AttachFinancialConnectionResponse {
+  externalAccountId: string;
+  account: unknown;
+}
+
+export interface CreatePayoutSetupIntentRequest {
+  connectAccountId: string;
+  customerId: string;
+}
+
+export interface CreatePayoutSetupIntentResponse {
+  clientSecret: string | null;
+  setupIntentId: string;
+  livemode: boolean;
 }
 
 export interface CreateBeneficiaryResponse {
@@ -88,6 +150,32 @@ export interface CreatePayoutResponse {
   destinationSummary: string;
 }
 
+export interface GetPayoutBankInfoResponse {
+  hasBankAccount: boolean;
+  bankLast4: string | null;
+  bankName: string | null;
+  bankCountry: string | null;
+  bankCurrency: string | null;
+  institutionName: string | null;
+  payoutsEnabled: boolean;
+  accountStatus: string;
+}
+
+export interface CreateCustomerRequest {
+  email?: string;
+  name?: string;
+  metadata?: Record<string, string>;
+  connectAccountId?: string;
+}
+
+export interface CreateCustomerResponse {
+  customerId: string;
+}
+
+export interface DeleteBeneficiaryResponse {
+  deleted: boolean;
+}
+
 @Injectable()
 export class BillingClient {
   private readonly logger = new Logger(BillingClient.name);
@@ -108,6 +196,25 @@ export class BillingClient {
       "http://localhost:3000";
     this.apiKey = this.configService.get("BILLING_SERVICE_API_KEY") || "";
     this.secretKey = this.configService.get("BILLING_SERVICE_SECRET_KEY") || "";
+  }
+
+  private handleAxiosError(context: string, error: any): never {
+    const axiosError = error as AxiosError;
+    if (axiosError?.isAxiosError) {
+      const status = axiosError.response?.status ?? 500;
+      const data = axiosError.response?.data;
+
+      this.logger.error(`${context} (billing)`, {
+        status,
+        data,
+        message: axiosError.message,
+      });
+
+      throw new HttpException(data || axiosError.message, status);
+    }
+
+    this.logger.error(`${context} (unknown error)`, error);
+    throw error;
   }
 
   /**
@@ -151,6 +258,12 @@ export class BillingClient {
         Date.now() + (response.data.expires_in || 86400) * 1000;
 
       this.logger.debug("Billing service access token obtained successfully");
+
+      // Dev-only: emit the token inline so pretty-print logging can't hide the payload.
+      const expiresAtIso = new Date(this.tokenExpiresAt).toISOString();
+      this.logger.warn(
+        `Billing service access token (dev): ${this.accessToken} (expires ${expiresAtIso})`,
+      );
       return this.accessToken!;
     } catch (error) {
       this.logger.error(
@@ -264,6 +377,187 @@ export class BillingClient {
       return response.data;
     } catch (error) {
       this.logger.error("Failed to start beneficiary onboarding", error);
+      throw error;
+    }
+  }
+
+  async createFinancialConnectionsSession(
+    request: CreateFinancialConnectionsSessionRequest,
+  ): Promise<CreateFinancialConnectionsSessionResponse> {
+    try {
+      this.logger.debug("Creating financial connections session", {
+        connectAccountId: request.connectAccountId,
+      });
+
+      const headers = await this.getHeaders();
+      const response = await firstValueFrom(
+        this.httpService.post(
+          `${this.baseUrl}/beneficiaries/${request.connectAccountId}/financial-connections/session`,
+          { returnUrl: request.returnUrl },
+          { headers },
+        ),
+      );
+
+      return response.data;
+    } catch (error) {
+      this.logger.error(
+        "Failed to create financial connections session",
+        error,
+      );
+      throw error;
+    }
+  }
+
+  async getFinancialConnectionsSession(
+    request: GetFinancialConnectionsSessionRequest,
+  ): Promise<GetFinancialConnectionsSessionResponse> {
+    try {
+      this.logger.debug("Retrieving financial connections session", {
+        connectAccountId: request.connectAccountId,
+        sessionId: request.sessionId,
+      });
+
+      const headers = await this.getHeaders();
+      const response = await firstValueFrom(
+        this.httpService.post(
+          `${this.baseUrl}/beneficiaries/${request.connectAccountId}/financial-connections/session/${request.sessionId}/retrieve`,
+          {},
+          { headers },
+        ),
+      );
+
+      this.logger.debug("Financial connections session retrieved", {
+        sessionId: response.data.sessionId,
+        accountsCount: response.data.accounts?.length || 0,
+      });
+
+      return response.data;
+    } catch (error) {
+      this.logger.error(
+        "Failed to retrieve financial connections session",
+        error,
+      );
+      throw error;
+    }
+  }
+
+  async attachFinancialConnection(
+    request: AttachFinancialConnectionRequest,
+  ): Promise<AttachFinancialConnectionResponse> {
+    try {
+      this.logger.debug("Attaching payout bank", {
+        connectAccountId: request.connectAccountId,
+        paymentMethodId: request.paymentMethodId,
+        customerId: request.customerId,
+      });
+
+      const headers = await this.getHeaders();
+      const response = await firstValueFrom(
+        this.httpService.post(
+          `${this.baseUrl}/beneficiaries/${request.connectAccountId}/payout-bank/attach`,
+          {
+            paymentMethodId: request.paymentMethodId,
+            customerId: request.customerId,
+          },
+          { headers },
+        ),
+      );
+
+      this.logger.debug("Financial connection attached successfully", {
+        externalAccountId: response.data.externalAccountId,
+      });
+
+      return response.data;
+    } catch (error) {
+      this.handleAxiosError("Failed to attach financial connection", error);
+    }
+  }
+
+  async createPayoutSetupIntent(
+    request: CreatePayoutSetupIntentRequest,
+  ): Promise<CreatePayoutSetupIntentResponse> {
+    try {
+      this.logger.debug("Creating payout setup intent", {
+        connectAccountId: request.connectAccountId,
+        customerId: request.customerId,
+      });
+
+      const headers = await this.getHeaders();
+      const response = await firstValueFrom(
+        this.httpService.post(
+          `${this.baseUrl}/beneficiaries/${request.connectAccountId}/payout-bank/setup-intent`,
+          { customerId: request.customerId },
+          { headers },
+        ),
+      );
+
+      return response.data;
+    } catch (error) {
+      this.handleAxiosError("Failed to create payout setup intent", error);
+    }
+  }
+
+  async deleteBeneficiary(connectAccountId: string): Promise<boolean> {
+    try {
+      this.logger.debug("Deleting beneficiary account", { connectAccountId });
+
+      const headers = await this.getHeaders();
+      const response = await firstValueFrom(
+        this.httpService.delete<DeleteBeneficiaryResponse>(
+          `${this.baseUrl}/beneficiaries/${connectAccountId}`,
+          { headers },
+        ),
+      );
+
+      return response.data.deleted;
+    } catch (error) {
+      this.logger.error("Failed to delete beneficiary account", error);
+      throw error;
+    }
+  }
+
+  async getPayoutBankInfo(
+    connectAccountId: string,
+  ): Promise<GetPayoutBankInfoResponse> {
+    try {
+      this.logger.debug("Getting payout bank info", { connectAccountId });
+
+      const headers = await this.getHeaders();
+      const response = await firstValueFrom(
+        this.httpService.get<GetPayoutBankInfoResponse>(
+          `${this.baseUrl}/beneficiaries/${connectAccountId}/payout-bank`,
+          { headers },
+        ),
+      );
+
+      return response.data;
+    } catch (error) {
+      this.logger.error("Failed to get payout bank info", error);
+      throw error;
+    }
+  }
+
+  async createCustomer(
+    request: CreateCustomerRequest,
+  ): Promise<CreateCustomerResponse> {
+    try {
+      this.logger.debug("Creating Stripe customer", {
+        email: request.email,
+        name: request.name,
+      });
+
+      const headers = await this.getHeaders();
+      const response = await firstValueFrom(
+        this.httpService.post<CreateCustomerResponse>(
+          `${this.baseUrl}/customers`,
+          request,
+          { headers },
+        ),
+      );
+
+      return response.data;
+    } catch (error) {
+      this.logger.error("Failed to create Stripe customer", error);
       throw error;
     }
   }

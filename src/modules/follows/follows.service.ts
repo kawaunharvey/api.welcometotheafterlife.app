@@ -39,13 +39,6 @@ export class FollowsService {
       if (!memorial) {
         throw new NotFoundException("Memorial not found");
       }
-    } else if (dto.targetType === "CREATOR") {
-      const creator = await this.prisma.creatorProfile.findUnique({
-        where: { id: dto.targetId },
-      });
-      if (!creator) {
-        throw new NotFoundException("Creator not found");
-      }
     }
 
     const follow = await this.prisma.follow.create({

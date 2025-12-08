@@ -3,11 +3,13 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Param,
   Body,
   Query,
   UseGuards,
   Headers,
+  Req,
   Logger,
 } from "@nestjs/common";
 import { FundraisingService } from "./fundraising.service";
@@ -19,6 +21,7 @@ import {
   CreateDonationCheckoutDto,
   CreateDonationPaymentIntentDto,
   StartBeneficiaryOnboardingDto,
+  StartFinancialConnectionsSessionDto,
   RequestPayoutDto,
   FundraisingProgramSummaryDto,
   DonationListItemDto,
@@ -26,6 +29,7 @@ import {
   BeneficiaryStatusDto,
 } from "./dto/fundraising.dto";
 import { FundraisingProgram } from "@prisma/client";
+import { Request } from "express";
 
 interface User {
   userId: string;
@@ -157,6 +161,7 @@ export class FundraisingController {
     @Param("memorialId") memorialId: string,
     @Body() dto: StartBeneficiaryOnboardingDto,
     @CurrentUser() user: User,
+    @Req() req: Request,
   ): Promise<{ onboardingUrl: string; beneficiaryOnboardingStatus: string }> {
     this.logger.debug("Starting beneficiary onboarding", {
       memorialId,
@@ -168,6 +173,7 @@ export class FundraisingController {
       memorialId,
       dto,
       user.userId,
+      req,
     );
   }
 
@@ -178,6 +184,99 @@ export class FundraisingController {
     this.logger.debug("Getting beneficiary status", { memorialId });
 
     return this.fundraisingService.getBeneficiaryStatus(memorialId);
+  }
+
+  @Delete("programs/:memorialId/beneficiary")
+  async deleteBeneficiary(
+    @Param("memorialId") memorialId: string,
+    @CurrentUser() user: User,
+  ) {
+    this.logger.debug("Deleting beneficiary", {
+      memorialId,
+      userId: user.userId,
+    });
+
+    return this.fundraisingService.deleteBeneficiary(memorialId, user.userId);
+  }
+
+  @Post("programs/:memorialId/beneficiary/financial-connections/session")
+  async createFinancialConnectionsSession(
+    @Param("memorialId") memorialId: string,
+    @Body() dto: StartFinancialConnectionsSessionDto,
+    @CurrentUser() user: User,
+  ) {
+    this.logger.debug("Creating financial connections session", {
+      memorialId,
+      userId: user.userId,
+    });
+
+    return this.fundraisingService.createFinancialConnectionsSession(
+      memorialId,
+      dto,
+      user.userId,
+    );
+  }
+
+  @Post(
+    "programs/:memorialId/beneficiary/financial-connections/session/:sessionId/retrieve",
+  )
+  async getFinancialConnectionsSession(
+    @Param("memorialId") memorialId: string,
+    @Param("sessionId") sessionId: string,
+    @CurrentUser() user: User,
+  ) {
+    this.logger.debug("Retrieving financial connections session", {
+      memorialId,
+      sessionId,
+      userId: user.userId,
+    });
+
+    return this.fundraisingService.getFinancialConnectionsSession(
+      memorialId,
+      sessionId,
+      user.userId,
+    );
+  }
+
+  @Post("programs/:memorialId/beneficiary/payout-bank/setup-intent")
+  async createPayoutSetupIntent(
+    @Param("memorialId") memorialId: string,
+    @Body() dto: { customerId: string },
+    @CurrentUser() user: User,
+  ) {
+    this.logger.debug("Creating payout setup intent", {
+      memorialId,
+      customerId: dto.customerId,
+      userId: user.userId,
+    });
+
+    return this.fundraisingService.createPayoutSetupIntent(
+      memorialId,
+      dto.customerId,
+      user.userId,
+    );
+  }
+
+  @Post("programs/:memorialId/beneficiary/financial-connections/attach")
+  @Post("programs/:memorialId/beneficiary/payout-bank/attach")
+  async attachPayoutBank(
+    @Param("memorialId") memorialId: string,
+    @Body() dto: { paymentMethodId: string; customerId: string },
+    @CurrentUser() user: User,
+  ) {
+    this.logger.debug("Attaching payout bank", {
+      memorialId,
+      paymentMethodId: dto.paymentMethodId,
+      customerId: dto.customerId,
+      userId: user.userId,
+    });
+
+    return this.fundraisingService.attachFinancialConnection(
+      memorialId,
+      dto.paymentMethodId,
+      dto.customerId,
+      user.userId,
+    );
   }
 
   @Post("programs/:memorialId/payouts")

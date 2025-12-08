@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { HttpService } from "@nestjs/axios";
 import { ConfigService } from "@nestjs/config";
 import { AxiosError, AxiosResponse } from "axios";
+import { SessionAnswerDto } from "@/modules/memorials/dto/obituary.dto";
 
 // ==================== Questionnaire Types ====================
 
@@ -9,6 +10,10 @@ export interface StartQuestionnaireRequest {
   userId: string;
   memorialId?: string;
   maxQuestions?: number;
+  keyLocationsText?: string;
+  deceasedFullName?: string;
+  yearOfBirth?: number;
+  yearOfPassing?: number;
 }
 
 export interface StartQuestionnaireResponse {
@@ -57,7 +62,9 @@ export interface CurrentQuestionResponse {
 }
 
 export interface AnswerQuestionRequest {
-  answer: string;
+  sessionQuestionId: string;
+  textValue?: string;
+  value: unknown;
 }
 
 export interface AnswerQuestionResponse {
@@ -92,6 +99,25 @@ export interface FollowUpResponse {
   }>;
 }
 
+export interface SubmitAdditionalContextRequest {
+  additionalContext: string;
+}
+
+export interface SubmitAdditionalContextResponse {
+  sessionId: string;
+  message: string;
+}
+
+export interface UpdateKeyLocationsRequest {
+  keyLocationsText: string;
+}
+
+export interface UpdateKeyLocationsResponse {
+  sessionId: string;
+  locationsCount: number;
+  message?: string;
+}
+
 // ==================== Draft Types ====================
 
 export interface GenerateDraftRequest {
@@ -123,6 +149,9 @@ export interface GenerateDraftResponse {
   createdAt: string;
   updatedAt: string;
 }
+
+// Some endpoints return { draft, message }, others return the draft directly.
+type DraftEnvelope<TDraft> = { draft: TDraft } | TDraft;
 
 export interface RegenerateDraftRequest {
   draftId: string;
@@ -228,21 +257,18 @@ export class ObituaryServiceClient {
       "OBITUARY_SERVICE_URL",
       "http://localhost:3020",
     );
-    this.clientId = this.configService.get<string>("OBITUARY_CLIENT_ID", "");
+    this.clientId = this.configService.get<string>("OBITUARY_API_KEY", "");
     this.clientSecret = this.configService.get<string>(
-      "OBITUARY_CLIENT_SECRET",
+      "OBITUARY_SECRET_KEY",
       "",
     );
-    this.oauthTokenUrl = this.configService.get<string>(
-      "OBITUARY_OAUTH_TOKEN_URL",
-      "https://oauth.example.com/oauth2/token",
-    );
+    this.oauthTokenUrl = `${this.baseUrl}/auth/service/token`;
   }
 
   // ==================== Authentication ====================
 
   /**
-   * Get access token using OAuth2 client credentials flow
+   * Get access token using service key authentication
    */
   private async getAccessToken(): Promise<string> {
     // Check if we have a valid token
@@ -258,23 +284,20 @@ export class ObituaryServiceClient {
       const response = await this.httpService
         .post(
           this.oauthTokenUrl,
-          new URLSearchParams({
-            grant_type: "client_credentials",
-            client_id: this.clientId,
-            client_secret: this.clientSecret,
-            scope:
-              "draft:read draft:write questionnaire:read questionnaire:write",
-          }),
+          {
+            apiKey: this.clientId,
+            secretKey: this.clientSecret,
+          },
           {
             headers: {
-              "Content-Type": "application/x-www-form-urlencoded",
+              "Content-Type": "application/json",
             },
           },
         )
         .toPromise();
 
       if (!response?.data) {
-        throw new Error("No response data from OAuth2 token endpoint");
+        throw new Error("No response data from service auth endpoint");
       }
 
       this.accessToken = response.data.access_token;
@@ -282,10 +305,10 @@ export class ObituaryServiceClient {
       this.tokenExpiresAt =
         Date.now() + response.data.expires_in * 1000 - 60000;
 
-      this.logger.log("Successfully obtained OAuth2 access token");
+      this.logger.log("Successfully obtained service access token");
       return this.accessToken!;
     } catch (error) {
-      this.logger.error("Failed to obtain OAuth2 access token", error);
+      this.logger.error("Failed to obtain service access token", error);
       throw new Error("Failed to authenticate with obituary service");
     }
   }
@@ -331,7 +354,7 @@ export class ObituaryServiceClient {
       () =>
         this.httpService
           .post<StartQuestionnaireResponse>(
-            `${this.baseUrl}/questionnaire/start`,
+            `${this.baseUrl}/questionnaire/start-with-basics`,
             req,
             headers,
           )
@@ -383,7 +406,7 @@ export class ObituaryServiceClient {
    */
   async answerQuestion(
     sessionId: string,
-    req: AnswerQuestionRequest,
+    req: SessionAnswerDto,
   ): Promise<AnswerQuestionResponse> {
     const headers = await this.getHeaders();
     return this.retryableRequest<AnswerQuestionResponse>(
@@ -438,6 +461,48 @@ export class ObituaryServiceClient {
     );
   }
 
+  /**
+   * Submit additional context for the questionnaire
+   */
+  async submitAdditionalContext(
+    sessionId: string,
+    req: SubmitAdditionalContextRequest,
+  ): Promise<SubmitAdditionalContextResponse> {
+    const headers = await this.getHeaders();
+    return this.retryableRequest<SubmitAdditionalContextResponse>(
+      () =>
+        this.httpService
+          .post<SubmitAdditionalContextResponse>(
+            `${this.baseUrl}/questionnaire/${sessionId}/additional-context`,
+            req,
+            headers,
+          )
+          .toPromise(),
+      "submitAdditionalContext",
+    );
+  }
+
+  /**
+   * Update key locations for an existing questionnaire session
+   */
+  async updateKeyLocations(
+    sessionId: string,
+    req: UpdateKeyLocationsRequest,
+  ): Promise<UpdateKeyLocationsResponse> {
+    const headers = await this.getHeaders();
+    return this.retryableRequest<UpdateKeyLocationsResponse>(
+      () =>
+        this.httpService
+          .post<UpdateKeyLocationsResponse>(
+            `${this.baseUrl}/questionnaire/${sessionId}/key-locations`,
+            req,
+            headers,
+          )
+          .toPromise(),
+      "updateKeyLocations",
+    );
+  }
+
   // ==================== Draft Methods ====================
 
   /**
@@ -447,10 +512,12 @@ export class ObituaryServiceClient {
     req: GenerateDraftRequest,
   ): Promise<GenerateDraftResponse> {
     const headers = await this.getHeaders();
-    return this.retryableRequest<GenerateDraftResponse>(
+    const response = await this.retryableRequest<
+      DraftEnvelope<GenerateDraftResponse>
+    >(
       () =>
         this.httpService
-          .post<GenerateDraftResponse>(
+          .post<DraftEnvelope<GenerateDraftResponse>>(
             `${this.baseUrl}/draft/generate`,
             req,
             headers,
@@ -458,6 +525,8 @@ export class ObituaryServiceClient {
           .toPromise(),
       "generateDraft",
     );
+
+    return "draft" in response ? response.draft : response;
   }
 
   /**
@@ -467,10 +536,12 @@ export class ObituaryServiceClient {
     req: RegenerateDraftRequest,
   ): Promise<GenerateDraftResponse> {
     const headers = await this.getHeaders();
-    return this.retryableRequest<GenerateDraftResponse>(
+    const response = await this.retryableRequest<
+      DraftEnvelope<GenerateDraftResponse>
+    >(
       () =>
         this.httpService
-          .post<GenerateDraftResponse>(
+          .post<DraftEnvelope<GenerateDraftResponse>>(
             `${this.baseUrl}/draft/regenerate`,
             req,
             headers,
@@ -478,6 +549,8 @@ export class ObituaryServiceClient {
           .toPromise(),
       "regenerateDraft",
     );
+
+    return "draft" in response ? response.draft : response;
   }
 
   /**

@@ -64,6 +64,7 @@ export class UploadsService {
         sessions.push({
           sessionId: session.id,
           uploadUrl: session.uploadUrl,
+          signedHeaders: session.signedHeaders,
           objectName: session.objectName,
           expiresAt: session.expiresAt,
         });
@@ -102,8 +103,10 @@ export class UploadsService {
 
         results.push({
           sessionId: session.sessionId,
-          assetId: completion.assetId,
-          objectName: completion.objectName,
+          id: completion.id,
+          storagePath: completion.storagePath,
+          assetId: completion.assetId ?? completion.id,
+          objectName: completion.objectName ?? completion.storagePath,
           mimeType: completion.mimeType,
           sizeBytes: completion.sizeBytes,
           uploadedAt: completion.uploadedAt,
@@ -165,7 +168,8 @@ export class UploadsService {
     if (
       mimeType.startsWith("image/") ||
       mimeType.startsWith("video/") ||
-      mimeType.startsWith("audio/")
+      mimeType.startsWith("audio/") ||
+      mimeType === "application/octet-stream"
     ) {
       return "MEDIA";
     }
@@ -176,14 +180,23 @@ export class UploadsService {
    * Select appropriate policy based on visibility and asset type.
    */
   private selectPolicy(
-    visibility: "PUBLIC" | "PRIVATE",
+    visibility: "PUBLIC" | "UNLISTED" | "PRIVATE",
     assetType: "MEDIA" | "DOCUMENT",
   ): string {
     if (assetType === "DOCUMENT") {
       return CONTENT_POLICIES.DOCUMENT;
     }
 
-    if (visibility === "PRIVATE") {
+    const effectiveVisibility =
+      visibility === "UNLISTED" ? "PRIVATE" : visibility;
+
+    if (visibility === "UNLISTED") {
+      this.logger.warn(
+        `UNLISTED visibility received for upload; defaulting to PRIVATE policy`,
+      );
+    }
+
+    if (effectiveVisibility === "PRIVATE") {
       return CONTENT_POLICIES.PRIVATE_MEDIA;
     }
 

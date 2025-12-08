@@ -20,6 +20,7 @@ interface RawCreateSessionResponse {
   signedPutUrl?: string;
   storagePath: string;
   expiresAt: string;
+  signedHeaders?: Record<string, string>;
   [key: string]: unknown; // Allow other fields
 }
 
@@ -28,6 +29,7 @@ export interface CreateSessionResponse {
   uploadUrl: string; // Maps to signedPutUrl from content service
   objectName: string; // Maps to storagePath from content service
   expiresAt: string;
+  signedHeaders?: Record<string, string>;
 }
 
 export interface CompleteSessionRequest {
@@ -59,6 +61,8 @@ export interface CompleteSessionResponse {
   sizeBytes: number;
   uploadedAt: string;
   readUrl: string; // Add the final URL
+  storagePath?: string;
+  id?: string;
 }
 
 export interface GetAssetResponse {
@@ -156,6 +160,7 @@ export class ContentServiceClient {
       uploadUrl: rawResponse.signedPutUrl || "",
       objectName: rawResponse.storagePath || "",
       expiresAt: rawResponse.expiresAt,
+      signedHeaders: rawResponse.signedHeaders,
     };
   }
 

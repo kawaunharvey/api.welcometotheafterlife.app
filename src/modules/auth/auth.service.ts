@@ -323,7 +323,6 @@ export class AuthService {
       },
     });
     await this.prisma.memorial.deleteMany({ where: { ownerUserId: user.id } });
-    await this.prisma.post.deleteMany({ where: { creatorId: user.id } });
 
     // Finally, delete the user
     await this.prisma.user.delete({ where: { id: user.id } });

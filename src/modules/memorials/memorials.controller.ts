@@ -30,6 +30,7 @@ import {
   CurrentUser,
   CurrentUserContext,
 } from "../auth/current-user.decorator";
+import { SessionAnswerDto } from "./dto/obituary.dto";
 
 @ApiTags("memorials")
 @Controller("memorials")
@@ -242,13 +243,23 @@ export class MemorialsController {
   })
   async startQuestionnaire(
     @Param("id") memorialId: string,
-    @Body() body: { maxQuestions?: number },
+    @Body() body: {
+      maxQuestions?: number;
+      keyLocationsText?: string;
+      deceasedFullName?: string;
+      yearOfBirth?: number;
+      yearOfPassing?: number;
+    },
     @CurrentUser() user: CurrentUserContext,
   ) {
     return this.memorialObituaryService.startQuestionnaire(
       memorialId,
       user.userId,
       body.maxQuestions,
+      body.deceasedFullName,
+      body.yearOfBirth,
+      body.yearOfPassing,
+      body.keyLocationsText,
     );
   }
 
@@ -295,9 +306,9 @@ export class MemorialsController {
   })
   async answerQuestion(
     @Param("sessionId") sessionId: string,
-    @Body() body: { answer: string },
+    @Body() body: SessionAnswerDto,
   ) {
-    return this.memorialObituaryService.answerQuestion(sessionId, body.answer);
+    return this.memorialObituaryService.answerQuestion(sessionId, body);
   }
 
   /**
@@ -336,6 +347,67 @@ export class MemorialsController {
       sessionId,
       body.context,
       body.previousAnswer,
+    );
+  }
+
+  /**
+   * Submit additional context for questionnaire
+   */
+  @Post("obituary/questionnaire/:sessionId/additional-context")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Submit additional context for questionnaire" })
+  @ApiBody({
+    schema: {
+      type: "object",
+      properties: {
+        additionalContext: {
+          type: "string",
+          example: "He had a great sense of humor and loved telling stories...",
+        },
+      },
+      required: ["additionalContext"],
+    },
+  })
+  @HttpCode(200)
+  async submitAdditionalContext(
+    @Param("sessionId") sessionId: string,
+    @Body() body: { additionalContext: string },
+  ) {
+    return this.memorialObituaryService.submitAdditionalContext(
+      sessionId,
+      body.additionalContext,
+    );
+  }
+
+  /**
+   * Update key locations for an existing questionnaire session
+   */
+  @Post("obituary/questionnaire/:sessionId/key-locations")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Update key locations for questionnaire" })
+  @ApiBody({
+    schema: {
+      type: "object",
+      properties: {
+        keyLocationsText: {
+          type: "string",
+          example:
+            "London where she grew up; Atlanta where she built her career",
+        },
+      },
+      required: ["keyLocationsText"],
+    },
+  })
+  @HttpCode(200)
+  async updateKeyLocations(
+    @Param("sessionId") sessionId: string,
+    @Body() body: { keyLocationsText: string },
+  ) {
+    return this.memorialObituaryService.updateKeyLocations(
+      sessionId,
+      body.keyLocationsText,
     );
   }
 
@@ -383,7 +455,9 @@ export class MemorialsController {
       customInstructions?: string;
     },
   ) {
-    return this.memorialObituaryService.generateDraft(sessionId, body);
+    const { draft, memorialId } =
+      await this.memorialObituaryService.generateDraft(sessionId, body);
+    return { draft, memorialId };
   }
 
   /**
@@ -430,7 +504,39 @@ export class MemorialsController {
       customInstructions?: string;
     },
   ) {
-    return this.memorialObituaryService.regenerateDraft(draftId, body);
+    const { draft, memorialId } =
+      await this.memorialObituaryService.regenerateDraft(draftId, body);
+    return { draft, memorialId };
+  }
+
+  /**
+   * Publish a generated obituary draft and store the published copy
+   */
+  @Post(":id/obituary/draft/:draftId/publish")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Publish an obituary draft" })
+  async publishDraft(
+    @Param("id") memorialId: string,
+    @Param("draftId") draftId: string,
+    @CurrentUser() user: CurrentUserContext,
+  ) {
+    return this.memorialObituaryService.publishDraft(
+      memorialId,
+      draftId,
+      user.userId,
+    );
+  }
+
+  /**
+   * Get the latest published obituary for a memorial
+   */
+  @Get(":id/obituary/published")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get latest published obituary" })
+  async getPublishedObituary(@Param("id") memorialId: string) {
+    return this.memorialObituaryService.getPublishedObituary(memorialId);
   }
 
   /**
@@ -514,5 +620,23 @@ export class MemorialsController {
     },
   ) {
     return this.memorialObituaryService.estimateCost(sessionId, body);
+  }
+
+  /**
+   * Get obituary questionnaire status for a memorial
+   */
+  @Get(":id/obituary/status")
+  @ApiOperation({ summary: "Get obituary questionnaire status" })
+  @ApiOkResponse({
+    description: "Returns obituary session status for memorial",
+  })
+  async getObituaryStatus(
+    @Param("id") memorialId: string,
+    @CurrentUser() user?: CurrentUserContext,
+  ) {
+    return this.memorialObituaryService.getObituaryStatus(
+      memorialId,
+      user?.userId,
+    );
   }
 }

@@ -1,7 +1,15 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
-import { FeedType, FeedStatus, PostStatus } from "@prisma/client";
+import {
+  FollowTargetType,
+  LikeTargetType,
+  Post,
+  PostStatus,
+  Prisma,
+  Visibility,
+} from "@prisma/client";
 import * as crypto from "crypto";
+import { RedisService } from "../redis/redis.service";
 
 export interface FeedEntryWithPost {
   id: string;
@@ -10,174 +18,601 @@ export interface FeedEntryWithPost {
   reasons: string[];
   post: {
     id: string;
-    type: string;
-    title: string | null;
     caption: string | null;
-    composition: unknown;
-    assetRefs: string[];
     tags: string[];
-    categories: string[];
+    author: {
+      id: string;
+      handle?: string | null;
+      imageUrl?: string | null;
+    };
     visibility: string;
     status: string;
+    baseMediaUrl?: string;
+    baseMediaType?: string;
+    durationMs?: number | null;
     publishedAt: Date | null;
+    theme: string;
+    memorialCoverUrl: string | null;
+    memorialId: string | null;
     metrics: unknown;
     createdAt: Date;
     updatedAt: Date;
   };
 }
 
+type CachedFeedEntry = Omit<FeedEntryWithPost, "publishedAt" | "post"> & {
+  publishedAt: string;
+  post: Omit<
+    FeedEntryWithPost["post"],
+    "publishedAt" | "createdAt" | "updatedAt"
+  > & {
+    publishedAt: string | null;
+    createdAt: string;
+    updatedAt: string;
+  };
+};
+
+type PostWithMemorial = Prisma.PostGetPayload<{
+  include: {
+    memorial: true;
+    author: { select: { handle: true; imageUrl: true; id: true } };
+  };
+}>;
+
 @Injectable()
 export class FeedsService {
   private readonly logger = new Logger("FeedsService");
+  private readonly maxFeedSize = 200;
+  private readonly cacheTtlSeconds = 60 * 15; // 15 minutes
+  private readonly highEngagementThreshold = 25; // heuristic to keep global feed interesting
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private redis: RedisService,
+  ) {}
 
   /**
-   * Ensure a memorial feed exists; create if not.
+   * Get paginated global feed built from high-engagement videos.
    */
-  async ensureMemorialFeed(memorialId: string) {
-    const feedKey = this.generateFeedKey("MEMORIAL", memorialId);
+  async getGlobalFeedEntries({
+    limit = 20,
+    cursor,
+    userId,
+  }: {
+    limit?: number;
+    cursor?: string;
+    userId?: string;
+  } = {}) {
+    const safeLimit = Math.max(1, Math.min(limit, this.maxFeedSize));
+    const cacheKey = this.getGlobalFeedCacheKey();
 
-    const feed = await this.prisma.feed.findUnique({
-      where: { feedKey },
-    });
-
-    if (feed) {
-      return feed;
+    let entries = await this.getCachedFeedEntries(cacheKey);
+    if (!entries) {
+      entries = await this.buildAndCacheGlobalFeed();
     }
 
-    return this.prisma.feed.create({
-      data: {
-        type: FeedType.MEMORIAL,
-        memorialId,
-        feedKey,
-        status: FeedStatus.ACTIVE,
-      },
-    });
+    const preferenceTags = userId
+      ? await this.resolvePreferenceTags(userId)
+      : new Set<string>();
+
+    const personalized = this.applyPreferenceOverlay(entries, preferenceTags);
+    return this.paginateEntries(personalized, safeLimit, cursor);
   }
 
   /**
-   * Get feed by memorial ID.
+   * Fallback feed: chronological list of published posts.
    */
-  async getFeedByMemorial(memorialId: string) {
-    return this.prisma.feed.findFirst({
-      where: {
-        memorialId,
-        type: FeedType.MEMORIAL,
-      },
-    });
+  async getFallbackFeedEntries({
+    limit = 20,
+    cursor,
+    userId,
+  }: {
+    limit?: number;
+    cursor?: string;
+    userId?: string;
+  } = {}) {
+    const safeLimit = Math.max(1, Math.min(limit, this.maxFeedSize));
+    const cacheKey = this.getFallbackFeedCacheKey();
+
+    let entries = await this.getCachedFeedEntries(cacheKey);
+    if (!entries) {
+      entries = await this.buildAndCacheFallbackFeed();
+    }
+
+    const preferenceTags = userId
+      ? await this.resolvePreferenceTags(userId)
+      : new Set<string>();
+
+    const personalized = this.applyPreferenceOverlay(entries, preferenceTags);
+    return this.paginateEntries(personalized, safeLimit, cursor);
   }
 
   /**
-   * Get feed by ID.
-   */
-  async getFeedById(feedId: string) {
-    return this.prisma.feed.findUnique({
-      where: { id: feedId },
-    });
-  }
-
-  /**
-   * Add a post entry to the memorial's feed.
+   * Add a post entry to the memorial's cached feed, recomputing if needed.
    */
   async addEntryForMemorialPost(
     memorialId: string,
     postId: string,
     reasons: string[],
   ) {
-    // Ensure memorial feed exists
-    const feed = await this.ensureMemorialFeed(memorialId);
-
-    // Create feed entry
-    return this.prisma.feedEntry.create({
-      data: {
-        feedId: feed.id,
-        postId,
-        publishedAt: new Date(),
-        score: 1.0, // Baseline score
-        reasons,
+    const post = await this.prisma.post.findUnique({
+      where: { id: postId },
+      include: {
+        memorial: true,
+        author: {
+          select: { handle: true, imageUrl: true, id: true },
+        },
       },
     });
+
+    if (!post) {
+      this.logger.warn(`Cannot add post ${postId} to feed; post not found`);
+      return null;
+    }
+
+    if (post.status !== PostStatus.PUBLISHED) {
+      this.logger.warn(
+        `Cannot add post ${postId} to feed; status ${post.status} is not publishable`,
+      );
+      return null;
+    }
+
+    if (post.memorialId !== memorialId) {
+      this.logger.warn(
+        `Cannot add post ${postId} to memorial ${memorialId}; memorial mismatch`,
+      );
+      return null;
+    }
+
+    const entry = this.buildFeedEntry(post, reasons);
+    const cacheKey = this.getMemorialFeedCacheKey(memorialId);
+    const existingEntries = (await this.getCachedFeedEntries(cacheKey)) ?? [];
+    const merged = this.mergeEntries([entry, ...existingEntries]);
+
+    await this.writeFeedEntriesToCache(cacheKey, merged);
+    return entry;
   }
 
   /**
-   * Get paginated feed entries for a memorial with hydrated posts.
+   * Get paginated feed entries for a memorial, hydrating from cache or DB.
    */
   async getMemorialFeedEntries(
     memorialId: string,
     {
       limit = 20,
       cursor,
+      userId,
     }: {
       limit?: number;
       cursor?: string;
+      userId?: string;
     } = {},
   ): Promise<FeedEntryWithPost[]> {
-    // Ensure feed exists
-    const feed = await this.ensureMemorialFeed(memorialId);
+    const safeLimit = Math.max(1, Math.min(limit, this.maxFeedSize));
+    const cacheKey = this.getMemorialFeedCacheKey(memorialId);
 
-    const entries = await this.prisma.feedEntry.findMany({
-      where: {
-        feedId: feed.id,
-        post: {
-          status: PostStatus.PUBLISHED,
-        },
-      },
-      include: {
-        post: true,
-      },
-      orderBy: { publishedAt: "desc" },
-      take: Math.min(limit, 100),
-      skip: cursor ? 1 : 0,
-    });
+    let entries = await this.getCachedFeedEntries(cacheKey);
+    if (!entries) {
+      entries = await this.buildAndCacheMemorialFeed(memorialId);
+    }
 
-    return entries as FeedEntryWithPost[];
+    const preferenceTags = userId
+      ? await this.resolvePreferenceTags(userId)
+      : new Set<string>();
+
+    const personalized = this.applyPreferenceOverlay(entries, preferenceTags);
+    return this.paginateEntries(personalized, safeLimit, cursor);
   }
 
   /**
-   * Rebuild feed entries for a memorial from recent published posts.
+   * Force a rebuild of a memorial feed and refresh the cache.
    */
   async rebuildMemorialFeed(memorialId: string) {
-    const feed = await this.ensureMemorialFeed(memorialId);
+    const entries = await this.buildAndCacheMemorialFeed(memorialId);
+    this.logger.log(
+      `Rebuilt feed for memorial ${memorialId} with ${entries.length} posts`,
+    );
+    return entries;
+  }
 
-    // Clear existing entries
-    await this.prisma.feedEntry.deleteMany({
-      where: { feedId: feed.id },
-    });
+  private getGlobalFeedCacheKey() {
+    return "feed:global:video-high-engagement";
+  }
 
-    // Get recent published posts for this memorial
+  private getFallbackFeedCacheKey() {
+    return "feed:fallback:chronological";
+  }
+
+  private getMemorialFeedCacheKey(memorialId: string) {
+    return `feed:memorial:${memorialId}`;
+  }
+
+  private async buildAndCacheGlobalFeed() {
+    const entries = await this.buildGlobalFeedEntries();
+    await this.writeFeedEntriesToCache(this.getGlobalFeedCacheKey(), entries);
+    return entries;
+  }
+
+  private async buildAndCacheFallbackFeed() {
+    const entries = await this.buildFallbackFeedEntries();
+    await this.writeFeedEntriesToCache(this.getFallbackFeedCacheKey(), entries);
+    return entries;
+  }
+
+  private async buildAndCacheMemorialFeed(memorialId: string) {
+    const entries = await this.buildFeedEntriesForMemorial(memorialId);
+    await this.writeFeedEntriesToCache(
+      this.getMemorialFeedCacheKey(memorialId),
+      entries,
+    );
+    return entries;
+  }
+
+  private async buildFeedEntriesForMemorial(memorialId: string) {
     const posts = await this.prisma.post.findMany({
       where: {
         memorialId,
         status: PostStatus.PUBLISHED,
       },
       orderBy: { publishedAt: "desc" },
-      take: 100,
+      take: this.maxFeedSize,
+      include: {
+        memorial: true,
+        author: {
+          select: { handle: true, imageUrl: true, id: true },
+        },
+      },
     });
 
-    // Create new entries
-    for (const post of posts) {
-      await this.prisma.feedEntry.create({
-        data: {
-          feedId: feed.id,
-          postId: post.id,
-          publishedAt: post.publishedAt || new Date(),
-          score: 1.0,
-          reasons: ["REBUILT"],
-        },
-      });
-    }
+    const sorted = [...posts].sort((a, b) => {
+      const aDate = (a.publishedAt ?? a.createdAt).getTime();
+      const bDate = (b.publishedAt ?? b.createdAt).getTime();
+      return bDate - aDate;
+    });
 
-    this.logger.log(
-      `Rebuilt feed for memorial ${memorialId} with ${posts.length} posts`,
+    return sorted.map((post) =>
+      this.buildFeedEntry(post, this.deriveReasonsFromPost(post)),
     );
   }
 
-  /**
-   * Generate a deterministic feed key from scope.
-   */
-  private generateFeedKey(type: string, id: string): string {
-    const input = `${type}:${id}`;
-    return crypto.createHash("sha1").update(input).digest("hex");
+  private async buildFallbackFeedEntries() {
+    const posts = await this.prisma.post.findMany({
+      where: { status: PostStatus.PUBLISHED },
+      orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }],
+      take: this.maxFeedSize,
+      include: {
+        memorial: true,
+        author: {
+          select: { handle: true, imageUrl: true, id: true },
+        },
+      },
+    });
+
+    return posts.map((post) => {
+      const reasons = Array.from(
+        new Set(["FALLBACK", ...this.deriveReasonsFromPost(post)]),
+      );
+      return this.buildFeedEntry(post, reasons);
+    });
+  }
+
+  private async buildGlobalFeedEntries() {
+    const candidates = await this.prisma.post.findMany({
+      where: {
+        status: PostStatus.PUBLISHED,
+        visibility: Visibility.PUBLIC,
+      },
+      orderBy: [{ publishedAt: "desc" }, { createdAt: "desc" }],
+      take: this.maxFeedSize * 3, // wider net before engagement filtering
+      include: {
+        memorial: true,
+        author: {
+          select: { handle: true, imageUrl: true, id: true },
+        },
+      },
+    });
+
+    const highEngagementVideos = candidates
+      .filter((post) => this.isHighEngagementVideo(post))
+      .map((post) => ({
+        post,
+        engagementScore: this.computeEngagementScore(post),
+      }))
+      .sort((a, b) => {
+        if (b.engagementScore !== a.engagementScore) {
+          return b.engagementScore - a.engagementScore;
+        }
+        const aDate = (a.post.publishedAt ?? a.post.createdAt).getTime();
+        const bDate = (b.post.publishedAt ?? b.post.createdAt).getTime();
+        return bDate - aDate;
+      })
+      .slice(0, this.maxFeedSize);
+
+    return highEngagementVideos.map(({ post }) => {
+      const reasons = [
+        "HIGH_ENGAGEMENT",
+        "VIDEO",
+        ...this.deriveReasonsFromPost(post),
+      ];
+      const dedupedReasons = Array.from(new Set(reasons));
+      return this.buildFeedEntry(post, dedupedReasons);
+    });
+  }
+
+  private buildFeedEntry(
+    post: PostWithMemorial,
+    reasons: string[],
+    preferenceTags?: Set<string>,
+  ): FeedEntryWithPost {
+    const normalizedReasons = reasons.length ? [...reasons] : ["RECENT_POST"];
+    const entryId = this.generateEntryId(post.id, post.memorialId ?? "GLOBAL");
+
+    return {
+      id: entryId,
+      publishedAt: post.publishedAt ?? post.createdAt,
+      score: this.scorePost(post, preferenceTags),
+      reasons: normalizedReasons,
+      post: {
+        id: post.id,
+        caption: post.caption,
+        tags: post.tags ?? [],
+        visibility: post.visibility,
+        status: post.status,
+        author: {
+          id: post.author?.id as string,
+          handle: post.author?.handle,
+          imageUrl: post.author?.imageUrl,
+        },
+        publishedAt: post.publishedAt,
+        baseMediaUrl: post.baseMedia?.url,
+        baseMediaType: post.baseMedia?.mediaType,
+        durationMs: post.baseMedia?.durationMs,
+        metrics: post.metrics,
+        updatedAt: post.updatedAt,
+        theme: post.memorial?.theme || "default",
+        memorialCoverUrl: post.memorial?.coverAssetUrl || null,
+        memorialId: post.memorialId || null,
+        createdAt: post.createdAt,
+      },
+    };
+  }
+
+  private deriveReasonsFromPost(post: Post, preferenceTags?: Set<string>) {
+    const reasons = ["RECENT_POST"];
+
+    if (post.tags?.length) {
+      for (const tag of post.tags.slice(0, 3)) {
+        reasons.push(`TAG:${tag}`);
+      }
+    }
+
+    if (preferenceTags && post.tags?.some((tag) => preferenceTags.has(tag))) {
+      reasons.push("PREFERENCE_MATCH");
+    }
+
+    if (post.visibility !== "PUBLIC") {
+      reasons.push(`VISIBILITY:${post.visibility}`);
+    }
+
+    return reasons;
+  }
+
+  private computeEngagementScore(post: Post) {
+    const likes = this.extractMetricNumber(post.metrics, "likes");
+    const impressions = this.extractMetricNumber(post.metrics, "impressions");
+    const watchTimeMs = this.extractMetricNumber(post.metrics, "watchTimeMs");
+    const clicks = this.extractMetricNumber(post.metrics, "clicks");
+
+    const score =
+      likes * 3 + clicks * 2 + impressions * 0.05 + watchTimeMs / 1000; // 1 point per second of aggregate watch time
+
+    return Number(score.toFixed(4));
+  }
+
+  private isHighEngagementVideo(post: Post) {
+    const mediaType = post.baseMedia?.mediaType?.toLowerCase();
+    if (mediaType !== "video") {
+      return false;
+    }
+
+    const engagementScore = this.computeEngagementScore(post);
+    if (engagementScore < this.highEngagementThreshold) {
+      return false;
+    }
+
+    const likes = this.extractMetricNumber(post.metrics, "likes");
+    const impressions = this.extractMetricNumber(post.metrics, "impressions");
+
+    // Require at least one strong signal in addition to the aggregate score.
+    return likes >= 5 || impressions >= 200;
+  }
+
+  private scorePost(post: Post, preferenceTags?: Set<string>) {
+    const now = Date.now();
+    const publishedAt = (post.publishedAt ?? post.createdAt).getTime();
+    const ageMs = Math.max(0, now - publishedAt);
+    const daysOld = ageMs / (1000 * 60 * 60 * 24);
+    const recencyWeight = Math.max(0, 1 - daysOld / 30); // decay over ~1 month
+    const tags = post.tags ?? [];
+    const preferenceWeight = preferenceTags
+      ? tags.filter((tag) => preferenceTags.has(tag)).length * 0.2
+      : 0;
+    const engagementWeight =
+      this.extractMetricNumber(post.metrics, "likes") * 0.01 +
+      this.extractMetricNumber(post.metrics, "impressions") * 0.001;
+
+    const score =
+      1 + recencyWeight + preferenceWeight + Math.min(engagementWeight, 1);
+    return Number(score.toFixed(4));
+  }
+
+  private extractMetricNumber(metrics: unknown, field: string) {
+    if (
+      metrics &&
+      typeof metrics === "object" &&
+      field in (metrics as Record<string, unknown>)
+    ) {
+      const value = (metrics as Record<string, unknown>)[field];
+      if (typeof value === "number") {
+        return value;
+      }
+    }
+
+    return 0;
+  }
+
+  private mergeEntries(entries: FeedEntryWithPost[]) {
+    const seen = new Set<string>();
+    const deduped: FeedEntryWithPost[] = [];
+
+    for (const entry of entries) {
+      if (seen.has(entry.post.id)) {
+        continue;
+      }
+      seen.add(entry.post.id);
+      deduped.push(entry);
+      if (deduped.length >= this.maxFeedSize) {
+        break;
+      }
+    }
+
+    return deduped;
+  }
+
+  private async getCachedFeedEntries(cacheKey: string) {
+    const cached = await this.redis.get<CachedFeedEntry[]>(cacheKey);
+    if (!cached) {
+      return null;
+    }
+
+    return cached.map((entry) => this.deserializeCachedEntry(entry));
+  }
+
+  private deserializeCachedEntry(entry: CachedFeedEntry): FeedEntryWithPost {
+    return {
+      ...entry,
+      publishedAt: new Date(entry.publishedAt),
+      reasons: [...entry.reasons],
+      post: {
+        ...entry.post,
+        tags: [...entry.post.tags],
+        publishedAt: entry.post.publishedAt
+          ? new Date(entry.post.publishedAt)
+          : null,
+        createdAt: new Date(entry.post.createdAt),
+        updatedAt: new Date(entry.post.updatedAt),
+      },
+    };
+  }
+
+  private async writeFeedEntriesToCache(
+    cacheKey: string,
+    entries: FeedEntryWithPost[],
+  ) {
+    if (!entries.length) {
+      await this.redis.del(cacheKey);
+      return;
+    }
+
+    await this.redis.set(cacheKey, entries, this.cacheTtlSeconds);
+  }
+
+  private applyPreferenceOverlay(
+    entries: FeedEntryWithPost[],
+    preferenceTags: Set<string>,
+  ) {
+    if (!preferenceTags.size) {
+      return entries;
+    }
+
+    return entries.map((entry) => {
+      if (!entry.post.tags.some((tag) => preferenceTags.has(tag))) {
+        return entry;
+      }
+
+      const newScore = Number(((entry.score ?? 1) + 0.5).toFixed(4));
+      const reasons = entry.reasons.includes("PREFERENCE_MATCH")
+        ? entry.reasons
+        : [...entry.reasons, "PREFERENCE_MATCH"];
+
+      return {
+        ...entry,
+        score: newScore,
+        reasons,
+      };
+    });
+  }
+
+  private paginateEntries(
+    entries: FeedEntryWithPost[],
+    limit: number,
+    cursor?: string,
+  ) {
+    if (!cursor) {
+      return entries.slice(0, limit);
+    }
+
+    const cursorIndex = entries.findIndex((entry) => entry.id === cursor);
+    const startIndex = cursorIndex >= 0 ? cursorIndex + 1 : 0;
+    return entries.slice(startIndex, startIndex + limit);
+  }
+
+  private async resolvePreferenceTags(userId?: string) {
+    if (!userId) {
+      return new Set<string>();
+    }
+
+    const [likes, follows] = await Promise.all([
+      this.prisma.like.findMany({
+        where: { userId, targetType: LikeTargetType.POST },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      }),
+      this.prisma.follow.findMany({
+        where: { userId, targetType: FollowTargetType.MEMORIAL },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      }),
+    ]);
+
+    const likedPostIds = likes.map((like) => like.targetId);
+    const followedMemorialIds = follows.map((follow) => follow.targetId);
+
+    type TagCarrier = { tags: string[] | null };
+    const likedPostsPromise: Promise<TagCarrier[]> = likedPostIds.length
+      ? this.prisma.post.findMany({
+          where: { id: { in: likedPostIds } },
+          select: { id: true, tags: true },
+        })
+      : Promise.resolve([]);
+
+    const followedMemorialsPromise: Promise<TagCarrier[]> =
+      followedMemorialIds.length
+        ? this.prisma.memorial.findMany({
+            where: { id: { in: followedMemorialIds } },
+            select: { id: true, tags: true },
+          })
+        : Promise.resolve([]);
+
+    const [likedPosts, followedMemorials] = await Promise.all([
+      likedPostsPromise,
+      followedMemorialsPromise,
+    ]);
+
+    const tags = new Set<string>();
+
+    likedPosts.forEach((post) => {
+      (post.tags ?? []).forEach((tag) => tags.add(tag));
+    });
+
+    followedMemorials.forEach((memorial) => {
+      (memorial.tags ?? []).forEach((tag) => tags.add(tag));
+    });
+
+    return tags;
+  }
+
+  private generateEntryId(postId: string, scope: string) {
+    return crypto.createHash("sha1").update(`${scope}:${postId}`).digest("hex");
   }
 }

@@ -21,6 +21,12 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     let message = "Internal server error";
     let error = "INTERNAL_ERROR";
 
+    const reqMeta = {
+      method: request?.method,
+      path: request?.url,
+      userId: request?.user?.userId,
+    };
+
     // Handle Prisma errors
     if (exception instanceof PrismaClientKnownRequestError) {
       if (exception.code === "P2002") {
@@ -38,6 +44,8 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       }
       this.logger.error(
         `Prisma Error: ${exception.code} - ${exception.message}`,
+        exception.stack,
+        reqMeta,
       );
     }
     // Handle NestJS HTTP exceptions
@@ -50,8 +58,24 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       } else {
         message = exceptionResponse as string;
       }
+
+      this.logger.error(
+        `HTTP ${status} ${request?.method} ${request?.url}: ${message}`,
+        exception.stack,
+        {
+          ...reqMeta,
+          response: exceptionResponse,
+        },
+      );
     } else {
-      this.logger.error("Unhandled exception:", exception);
+      this.logger.error(
+        `Unhandled exception on ${request?.method} ${request?.url}: ${message}`,
+        (exception as Error)?.stack,
+        {
+          ...reqMeta,
+          exception,
+        },
+      );
       message = "Internal server error";
     }
 

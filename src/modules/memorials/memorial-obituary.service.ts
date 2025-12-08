@@ -4,9 +4,13 @@ import {
   StartQuestionnaireRequest,
   GenerateDraftRequest,
   GetDraftResponse,
+  QuestionnaireSessionResponse,
+  UpdateKeyLocationsRequest,
 } from "../../common";
 import { ObituaryCacheService } from "../../common";
 import { MemorialsService } from "./memorials.service";
+import { SessionAnswerDto } from "./dto/obituary.dto";
+import { PrismaService } from "../../prisma/prisma.service";
 
 @Injectable()
 export class MemorialObituaryService {
@@ -16,6 +20,7 @@ export class MemorialObituaryService {
     private readonly obituaryClient: ObituaryServiceClient,
     private readonly obituaryCache: ObituaryCacheService,
     private readonly memorialsService: MemorialsService,
+    private readonly prisma: PrismaService,
   ) {}
 
   // ==================== Questionnaire Management ====================
@@ -27,6 +32,10 @@ export class MemorialObituaryService {
     memorialId: string,
     userId: string,
     maxQuestions?: number,
+    deceasedFullName?: string,
+    yearOfBirth?: number,
+    yearOfPassing?: number,
+    keyLocationsText?: string,
   ) {
     this.logger.debug(
       `Starting questionnaire for memorial ${memorialId} by user ${userId}`,
@@ -61,8 +70,11 @@ export class MemorialObituaryService {
       userId,
       memorialId,
       maxQuestions: maxQuestions || 15,
+      deceasedFullName,
+      yearOfBirth,
+      yearOfPassing,
+      keyLocationsText,
     };
-
     const session = await this.obituaryClient.startQuestionnaire(request);
 
     // Cache the session and memorial association
@@ -95,9 +107,11 @@ export class MemorialObituaryService {
   /**
    * Get questionnaire session progress
    */
-  async getQuestionnaireSession(sessionId: string) {
+  async getQuestionnaireSession(
+    sessionId: string,
+  ): Promise<QuestionnaireSessionResponse> {
     // Try cache first
-    let session =
+    let session: QuestionnaireSessionResponse | null =
       await this.obituaryCache.getCachedQuestionnaireSession(sessionId);
 
     if (!session) {
@@ -144,10 +158,11 @@ export class MemorialObituaryService {
   /**
    * Answer a question in the questionnaire
    */
-  async answerQuestion(sessionId: string, answer: string) {
-    const response = await this.obituaryClient.answerQuestion(sessionId, {
+  async answerQuestion(sessionId: string, answer: SessionAnswerDto) {
+    const response = await this.obituaryClient.answerQuestion(
+      sessionId,
       answer,
-    });
+    );
 
     // Invalidate current question cache since it changed
     await this.obituaryCache.invalidateOnSessionCompletion(sessionId);
@@ -184,6 +199,123 @@ export class MemorialObituaryService {
   }
 
   /**
+   * Get obituary status for a memorial (active session, answered counts, etc.)
+   */
+  async getObituaryStatus(memorialId: string, userId?: string) {
+    // Ensure memorial exists and the caller can access it
+    const memorial = await this.memorialsService.getById(memorialId, userId);
+
+    // Determine if there is a published obituary
+    const latestPublished = await this.prisma.publishedObituary.findFirst({
+      where: { memorialId },
+      orderBy: { publishedAt: "desc" },
+      select: { id: true },
+    });
+    const publishedObituaryId =
+      latestPublished?.id ?? memorial.obituaryId ?? null;
+    const isPublished = Boolean(publishedObituaryId);
+
+    // Try cached memorial->session mapping first
+    let sessionId =
+      await this.obituaryCache.getCachedMemorialSession(memorialId);
+
+    // Fallback to stored session id on the memorial record
+    if (!sessionId && memorial.obituaryServiceSessionId) {
+      sessionId = memorial.obituaryServiceSessionId;
+      // Cache it for future fast lookup
+      await this.obituaryCache.cacheMemorialSession(memorialId, sessionId);
+    }
+
+    if (!sessionId) {
+      return {
+        hasActive: false,
+        published: isPublished,
+        obituaryId: publishedObituaryId,
+        status: isPublished ? "published" : "none",
+      } as const;
+    }
+
+    // Fetch session progress (cache first, then service)
+    let session =
+      await this.obituaryCache.getCachedQuestionnaireSession(sessionId);
+    if (!session) {
+      session = await this.obituaryClient.getQuestionnaireSession(sessionId);
+      if (session) {
+        await this.obituaryCache.cacheQuestionnaireSession(session);
+      }
+    }
+
+    // If the cached session lacks progress data, refresh from source
+    if (
+      session &&
+      ((session.answeredQuestions ?? session.progress?.answered ?? null) ===
+        null ||
+        session.progress?.total === undefined)
+    ) {
+      const freshSession =
+        await this.obituaryClient.getQuestionnaireSession(sessionId);
+      if (freshSession) {
+        session = freshSession;
+        await this.obituaryCache.cacheQuestionnaireSession(freshSession);
+      }
+    }
+
+    // Derive answered/total with null when unavailable to avoid misleading zeros
+    // Normalize questionnaire progress fields to handle different shapes (answeredCount/totalQuestions)
+    const answered =
+      session?.answeredQuestions ??
+      (session as { answeredCount?: number }).answeredCount ??
+      session?.progress?.answered ??
+      null;
+
+    const total =
+      session?.progress?.total ??
+      (session as { totalQuestions?: number }).totalQuestions ??
+      session?.maxQuestions ??
+      null;
+
+    const completionRate =
+      session?.progress?.percentage ??
+      (session as { completionRate?: number }).completionRate ??
+      (answered !== null && total
+        ? Math.round((answered / total) * 100)
+        : null);
+
+    if (answered === null || total === null) {
+      this.logger.warn(
+        `getObituaryStatus - missing progress for memorial=${memorialId} session=${sessionId}; session keys=${session ? Object.keys(session).join(",") : "none"}`,
+      );
+    }
+
+    if (!session) {
+      return {
+        hasActive: false,
+        published: isPublished,
+        obituaryId: publishedObituaryId,
+        status: isPublished ? "published" : "unknown",
+      } as const;
+    }
+
+    const isCompleted = Boolean(session.isCompleted);
+
+    return {
+      hasActive: !isCompleted && !isPublished,
+      status: isPublished
+        ? "published"
+        : isCompleted
+          ? "completed"
+          : "in_progress",
+      sessionId,
+      answeredQuestions: answered,
+      totalQuestions: total,
+      completionRate,
+      progress: session.progress ?? null,
+      published: isPublished,
+      obituaryId: publishedObituaryId,
+    };
+  }
+
+  /**
    * Generate follow-up questions
    */
   async generateFollowUp(
@@ -195,6 +327,39 @@ export class MemorialObituaryService {
       context,
       previousAnswer,
     });
+
+    return response;
+  }
+
+  /**
+   * Submit additional context for the questionnaire
+   */
+  async submitAdditionalContext(sessionId: string, additionalContext: string) {
+    this.logger.debug(`Submitting additional context for session ${sessionId}`);
+
+    const response = await this.obituaryClient.submitAdditionalContext(
+      sessionId,
+      { additionalContext },
+    );
+
+    this.logger.log(`Additional context submitted for session ${sessionId}`);
+
+    return response;
+  }
+
+  /**
+   * Update key locations text for an existing questionnaire session
+   */
+  async updateKeyLocations(sessionId: string, keyLocationsText: string) {
+    this.logger.debug(`Updating key locations for session ${sessionId}`);
+
+    const request: UpdateKeyLocationsRequest = { keyLocationsText };
+    const response = await this.obituaryClient.updateKeyLocations(
+      sessionId,
+      request,
+    );
+
+    this.logger.log(`Key locations updated for session ${sessionId}`);
 
     return response;
   }
@@ -217,6 +382,46 @@ export class MemorialObituaryService {
     },
   ) {
     this.logger.debug(`Generating draft for session ${sessionId}`);
+
+    // Short-circuit if we already have a latest draft (cached or existing upstream)
+    const cachedLatest =
+      await this.obituaryCache.getCachedLatestDraft(sessionId);
+    if (cachedLatest) {
+      this.logger.debug(
+        `Returning cached latest draft for session ${sessionId}`,
+      );
+      const session = await this.getQuestionnaireSession(sessionId);
+      return { draft: cachedLatest, memorialId: session.memorialId ?? null };
+    }
+
+    try {
+      const existingLatest =
+        await this.obituaryClient.getLatestDraft(sessionId);
+      if (existingLatest) {
+        await this.obituaryCache.cacheLatestDraft(sessionId, existingLatest);
+        this.logger.debug(
+          `Returning existing latest draft from obituary service for session ${sessionId}`,
+        );
+        const session = await this.getQuestionnaireSession(sessionId);
+        return {
+          draft: existingLatest,
+          memorialId: session.memorialId ?? null,
+        };
+      }
+    } catch (error) {
+      if (
+        !(error instanceof NotFoundException) &&
+        !(
+          error &&
+          typeof error === "object" &&
+          "response" in error &&
+          (error as { response?: { status?: number } }).response?.status === 404
+        )
+      ) {
+        throw error;
+      }
+      // 404: proceed to generate
+    }
 
     const request: GenerateDraftRequest = {
       sessionId,
@@ -251,7 +456,7 @@ export class MemorialObituaryService {
     }
 
     this.logger.log(`Generated draft ${draft.id} for session ${sessionId}`);
-    return draft;
+    return { draft, memorialId: session.memorialId ?? null };
   }
 
   /**
@@ -284,12 +489,99 @@ export class MemorialObituaryService {
 
     // Cache the updated draft and clear related caches
     await Promise.all([
-      this.obituaryCache.cacheLatestDraft(draft.sessionId, draft),
+      // Cache regenerate result briefly (1 minute) to avoid rapid duplicate calls
+      this.obituaryCache.cacheLatestDraft(draft.sessionId, draft, 60),
       this.obituaryCache.invalidateOnNewDraft(draft.sessionId),
     ]);
 
+    // Get session to surface memorialId in response
+    const session = await this.getQuestionnaireSession(draft.sessionId);
+
     this.logger.log(`Regenerated draft ${draft.id}`);
-    return draft;
+    return { draft, memorialId: session.memorialId ?? null };
+  }
+
+  /**
+   * Publish a generated draft into the afterlife service store
+   */
+  async publishDraft(memorialId: string, draftId: string, userId: string) {
+    // Verify memorial ownership/access
+    const memorial = await this.memorialsService.getById(memorialId, userId);
+    if (!memorial) {
+      throw new NotFoundException(`Memorial ${memorialId} not found`);
+    }
+
+    // Fetch draft from obituary service
+    const draft = await this.obituaryClient.getDraft(draftId);
+
+    const version =
+      "version" in draft
+        ? ((draft as { version?: number | null }).version ?? null)
+        : null;
+
+    // Validate session association when present
+    if (
+      memorial.obituaryServiceSessionId &&
+      draft.sessionId &&
+      memorial.obituaryServiceSessionId !== draft.sessionId
+    ) {
+      throw new NotFoundException(
+        "Draft does not belong to this memorial session",
+      );
+    }
+
+    // Persist published copy
+    const published = await this.prisma.publishedObituary.create({
+      data: {
+        memorialId,
+        draftId,
+        sessionId: draft.sessionId,
+        tone: draft.tone,
+        length: draft.length,
+        content: draft.content,
+        wordCount: draft.metadata?.wordCount,
+        version,
+      },
+    });
+
+    // Enforce a maximum of 5 published versions per memorial by removing oldest
+    const excess = await this.prisma.publishedObituary.findMany({
+      where: { memorialId },
+      orderBy: { publishedAt: "desc" },
+      skip: 5,
+      select: { id: true },
+    });
+
+    if (excess.length > 0) {
+      const toDeleteIds = excess.map((e) => e.id);
+      await this.prisma.publishedObituary.deleteMany({
+        where: { id: { in: toDeleteIds } },
+      });
+      this.logger.log(
+        `publishDraft - trimmed ${toDeleteIds.length} old published obituary versions for memorial ${memorialId}`,
+      );
+    }
+
+    // Update memorial pointer to published obituary
+    await this.memorialsService.updateObituaryId(memorialId, published.id);
+
+    return published;
+  }
+
+  /**
+   * Get latest published obituary for a memorial
+   */
+  async getPublishedObituary(memorialId: string) {
+    const published = await this.prisma.publishedObituary.findFirst({
+      where: { memorialId },
+      orderBy: { publishedAt: "desc" },
+    });
+
+    if (!published) {
+      throw new NotFoundException("No published obituary found");
+    }
+
+    return published;
   }
 
   /**

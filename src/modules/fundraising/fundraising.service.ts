@@ -4,6 +4,7 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  HttpException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../../prisma/prisma.service";
@@ -20,6 +21,7 @@ import {
   DonationListItemDto,
   PayoutListItemDto,
   BeneficiaryStatusDto,
+  StartFinancialConnectionsSessionDto,
 } from "./dto/fundraising.dto";
 import {
   assertCents,
@@ -28,6 +30,7 @@ import {
   validateCurrency,
   sumCents,
 } from "../../common/utils/money";
+import { Request } from "express";
 import { assertMemorialOwnerOrAdmin } from "../../common/utils/permissions";
 import {
   FundraisingProgram,
@@ -417,10 +420,20 @@ export class FundraisingService {
     return response;
   }
 
+  private extractIp(req?: Request): string | undefined {
+    const xfwd =
+      req?.headers?.["x-forwarded-for"] || req?.headers?.["X-Forwarded-For"];
+    if (typeof xfwd === "string" && xfwd.length > 0) {
+      return xfwd.split(",").map((p: string) => p.trim())[0];
+    }
+    return req?.ip || req?.connection?.remoteAddress;
+  }
+
   async startBeneficiaryOnboarding(
     memorialId: string,
     dto: StartBeneficiaryOnboardingDto,
     userId: string,
+    req?: Request,
   ): Promise<{ onboardingUrl: string; beneficiaryOnboardingStatus: string }> {
     const program = await this.prisma.fundraisingProgram.findUnique({
       where: { memorialId },
@@ -433,12 +446,40 @@ export class FundraisingService {
 
     assertMemorialOwnerOrAdmin(userId, program.memorial);
 
+    const businessWebsite = this.configService.get<string>(
+      "STRIPE_BUSINESS_WEBSITE",
+    );
+    const statementDescriptor = this.configService.get<string>(
+      "STRIPE_FULL_STATEMENT_DESCRIPTOR",
+    );
+    const defaultBusinessName = this.configService.get<string>(
+      "STRIPE_BUSINESS_NAME",
+    );
+    const ip = this.extractIp(req);
+    const tosDate = dto.tosDate || Math.floor(Date.now() / 1000);
+
     const onboardingRequest = {
       memorialId,
       fundraisingId: program.id,
       beneficiaryType: dto.beneficiaryType,
       beneficiaryName: dto.beneficiaryName,
       email: dto.email,
+      phone: dto.phone,
+      ssnLast4: dto.ssnLast4,
+      dobDay: dto.dobDay,
+      dobMonth: dto.dobMonth,
+      dobYear: dto.dobYear,
+      addressLine1: dto.addressLine1,
+      addressLine2: dto.addressLine2,
+      city: dto.city,
+      state: dto.state,
+      postalCode: dto.postalCode,
+      country: dto.country,
+      businessName: dto.beneficiaryName || defaultBusinessName,
+      businessWebsite,
+      statementDescriptor,
+      tosDate,
+      tosIp: ip,
       metadata: {
         afterlifeMemorialId: memorialId,
         afterlifeFundraisingId: program.id,
@@ -448,6 +489,45 @@ export class FundraisingService {
     const response =
       await this.billingClient.startBeneficiaryOnboarding(onboardingRequest);
 
+    // Create Stripe Customer for payout bank account setup on the PLATFORM account
+    let stripeCustomerId = program.stripeCustomerId;
+    if (!stripeCustomerId) {
+      try {
+        const customerResponse = await this.billingClient.createCustomer({
+          email: dto.email,
+          name: dto.beneficiaryName,
+          metadata: {
+            memorialId,
+            fundraisingId: program.id,
+            connectAccountId: response.connectAccountId,
+          },
+          // IMPORTANT: Create on platform account so SetupIntent with on_behalf_of is accessible via platform key
+        });
+        stripeCustomerId = customerResponse.customerId;
+        this.logger.log(
+          "Created Stripe customer for payout setup on platform account",
+          {
+            memorialId,
+            customerId: stripeCustomerId,
+            connectAccountId: response.connectAccountId,
+          },
+        );
+      } catch (error) {
+        this.logger.error(
+          "Failed to create Stripe customer - payout bank setup will not be available",
+          {
+            memorialId,
+            connectAccountId: response.connectAccountId,
+            error: (error as Error).message,
+            stack: (error as Error).stack,
+          },
+        );
+        throw new Error(
+          `Failed to create Stripe customer for payout setup: ${(error as Error).message}`,
+        );
+      }
+    }
+
     // Update program with onboarding information
     await this.prisma.fundraisingProgram.update({
       where: { memorialId },
@@ -456,6 +536,7 @@ export class FundraisingService {
         beneficiaryName: dto.beneficiaryName,
         beneficiaryExternalId: response.beneficiaryId,
         connectAccountId: response.connectAccountId,
+        stripeCustomerId,
         beneficiaryOnboardingStatus: response.onboardingStatus,
       },
     });
@@ -498,7 +579,244 @@ export class FundraisingService {
       beneficiaryOnboardingStatus:
         program.beneficiaryOnboardingStatus || "NOT_STARTED",
       connectAccountId: program.connectAccountId,
+      stripeCustomerId: program.stripeCustomerId,
     };
+  }
+
+  async createPayoutSetupIntent(
+    memorialId: string,
+    customerId: string,
+    userId: string,
+  ) {
+    const program = await this.prisma.fundraisingProgram.findUnique({
+      where: { memorialId },
+      include: { memorial: true },
+    });
+
+    if (!program) {
+      throw new NotFoundException("Fundraising program not found");
+    }
+
+    assertMemorialOwnerOrAdmin(userId, program.memorial);
+
+    if (!program.connectAccountId) {
+      throw new BadRequestException(
+        "Connect account must be created before setting up payout bank",
+      );
+    }
+
+    // Use provided customerId or fall back to stored one
+    const effectiveCustomerId = customerId || program.stripeCustomerId;
+    if (!effectiveCustomerId) {
+      throw new BadRequestException(
+        "Customer ID is required for payout setup. Please complete beneficiary onboarding first.",
+      );
+    }
+
+    this.logger.debug("Creating payout setup intent", {
+      memorialId,
+      connectAccountId: program.connectAccountId,
+      customerId: effectiveCustomerId,
+    });
+
+    try {
+      return await this.billingClient.createPayoutSetupIntent({
+        connectAccountId: program.connectAccountId,
+        customerId: effectiveCustomerId,
+      });
+    } catch (error) {
+      const errorMessage =
+        error instanceof HttpException
+          ? error.message
+          : (error as Error).message;
+      const customerMissingOnPlatform = errorMessage?.includes(
+        "does not exist on platform",
+      );
+
+      // If the stored customer was created on a connected account, recreate on platform and retry once
+      if (customerMissingOnPlatform) {
+        const fallbackName =
+          program.beneficiaryName ||
+          program.memorial?.displayName ||
+          "Beneficiary";
+
+        this.logger.warn("Platform customer missing; recreating on platform", {
+          memorialId,
+          connectAccountId: program.connectAccountId,
+          previousCustomerId: effectiveCustomerId,
+          fallbackName,
+        });
+
+        const newCustomer = await this.billingClient.createCustomer({
+          name: fallbackName,
+          metadata: {
+            memorialId,
+            fundraisingId: program.id,
+            connectAccountId: program.connectAccountId,
+            note: "Auto-created on platform for payout bank setup",
+          },
+        });
+
+        await this.prisma.fundraisingProgram.update({
+          where: { memorialId },
+          data: { stripeCustomerId: newCustomer.customerId },
+        });
+
+        this.logger.log("Retrying payout setup intent with platform customer", {
+          memorialId,
+          connectAccountId: program.connectAccountId,
+          customerId: newCustomer.customerId,
+        });
+
+        return this.billingClient.createPayoutSetupIntent({
+          connectAccountId: program.connectAccountId,
+          customerId: newCustomer.customerId,
+        });
+      }
+
+      throw error;
+    }
+  }
+
+  async attachFinancialConnection(
+    memorialId: string,
+    paymentMethodId: string,
+    customerId: string,
+    userId: string,
+  ) {
+    const program = await this.prisma.fundraisingProgram.findUnique({
+      where: { memorialId },
+      include: { memorial: true },
+    });
+
+    if (!program) {
+      throw new NotFoundException("Fundraising program not found");
+    }
+
+    assertMemorialOwnerOrAdmin(userId, program.memorial);
+
+    if (!program.connectAccountId) {
+      throw new BadRequestException(
+        "Connect account must be created before attaching bank",
+      );
+    }
+
+    // Use provided customerId or fall back to stored one
+    const effectiveCustomerId = customerId || program.stripeCustomerId;
+    if (!effectiveCustomerId) {
+      throw new BadRequestException(
+        "Customer ID is required to attach bank. Please complete beneficiary onboarding first.",
+      );
+    }
+
+    this.logger.debug("Attaching payout bank", {
+      memorialId,
+      connectAccountId: program.connectAccountId,
+      paymentMethodId,
+      customerId: effectiveCustomerId,
+    });
+
+    return this.billingClient.attachFinancialConnection({
+      connectAccountId: program.connectAccountId,
+      paymentMethodId,
+      customerId: effectiveCustomerId,
+    });
+  }
+
+  async deleteBeneficiary(memorialId: string, userId: string) {
+    const program = await this.prisma.fundraisingProgram.findUnique({
+      where: { memorialId },
+      include: { memorial: true },
+    });
+
+    if (!program) {
+      throw new NotFoundException("Fundraising program not found");
+    }
+
+    assertMemorialOwnerOrAdmin(userId, program.memorial);
+
+    if (!program.connectAccountId) {
+      throw new BadRequestException("No connected account to delete");
+    }
+
+    await this.billingClient.deleteBeneficiary(program.connectAccountId);
+
+    await this.prisma.fundraisingProgram.update({
+      where: { memorialId },
+      data: {
+        connectAccountId: null,
+        beneficiaryExternalId: null,
+        beneficiaryOnboardingStatus: "NOT_STARTED",
+      },
+    });
+
+    await this.auditService.record({
+      subjectType: "FundraisingProgram",
+      subjectId: program.id,
+      actorUserId: userId,
+      action: "BENEFICIARY_DELETED",
+      payload: { memorialId },
+    });
+
+    return { deleted: true };
+  }
+
+  async createFinancialConnectionsSession(
+    memorialId: string,
+    dto: StartFinancialConnectionsSessionDto,
+    userId: string,
+  ) {
+    const program = await this.prisma.fundraisingProgram.findUnique({
+      where: { memorialId },
+      include: { memorial: true },
+    });
+
+    if (!program) {
+      throw new NotFoundException("Fundraising program not found");
+    }
+
+    assertMemorialOwnerOrAdmin(userId, program.memorial);
+
+    if (!program.connectAccountId) {
+      throw new BadRequestException(
+        "No connected account to link bank account",
+      );
+    }
+
+    const returnUrl =
+      dto.returnUrl ||
+      this.configService.get<string>("SERVICE_PUBLIC_BASE_URL");
+
+    return this.billingClient.createFinancialConnectionsSession({
+      connectAccountId: program.connectAccountId,
+      returnUrl,
+    });
+  }
+
+  async getFinancialConnectionsSession(
+    memorialId: string,
+    sessionId: string,
+    userId: string,
+  ) {
+    const program = await this.prisma.fundraisingProgram.findUnique({
+      where: { memorialId },
+      include: { memorial: true },
+    });
+
+    if (!program) {
+      throw new NotFoundException("Fundraising program not found");
+    }
+
+    assertMemorialOwnerOrAdmin(userId, program.memorial);
+
+    if (!program.connectAccountId) {
+      throw new BadRequestException("No connected account to retrieve session");
+    }
+
+    return this.billingClient.getFinancialConnectionsSession({
+      connectAccountId: program.connectAccountId,
+      sessionId,
+    });
   }
 
   async requestPayout(

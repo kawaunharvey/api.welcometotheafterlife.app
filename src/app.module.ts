@@ -17,6 +17,7 @@ import { VerificationModule } from "@/modules/verification/verification.module";
 import { CacheModule } from "@/common/cache/cache.module";
 import { HealthController } from "./health/health.controller";
 import { AppDataModule } from "./modules/app-data/app-data.module";
+import { LocationsModule } from "@/modules/locations/locations.module";
 
 @Module({
   imports: [
@@ -87,6 +88,7 @@ import { AppDataModule } from "./modules/app-data/app-data.module";
     FundraisingModule,
     VerificationModule,
     AppDataModule,
+    LocationsModule,
   ],
   controllers: [HealthController],
 })

@@ -115,9 +115,6 @@ export class PostSummaryDto {
   thumbnailUrl?: string;
 
   @ApiProperty()
-  type: string;
-
-  @ApiProperty()
   publishedAt: Date;
 
   @ApiProperty()

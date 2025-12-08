@@ -84,7 +84,7 @@ enum RSVPStatus {
 }
 
 enum FollowTargetType {
-  CREATOR
+  USER
   MEMORIAL
 }
 
@@ -95,11 +95,6 @@ enum LikeTargetType {
 enum CommentTargetType {
   POST
   EVENT
-}
-
-enum PostType {
-  TRIBUTE
-  CREATOR
 }
 
 enum FeedType {
@@ -140,33 +135,11 @@ model User {
   updatedAt DateTime @updatedAt
 
   // relations
-  sessions         Session[]       @relation(name: "UserSessions")
-  creatorProfile   CreatorProfile? @relation(name: "UserCreatorProfile", fields: [creatorProfileId], references: [id])
-  follows          Follow[]        @relation(name: "UserFollows")
-  likes            Like[]          @relation(name: "UserLikes")
-  comments         Comment[]       @relation(name: "UserComments")
-  feeds            Feed[]          @relation(name: "UserFeeds")
-  feedEvents       FeedEvent[]     @relation(name: "FeedEventUser")
-  creatorProfileId String?         @db.ObjectId
-}
-
-model CreatorProfile {
-  id                 String      @id @default(auto()) @map("_id") @db.ObjectId
-  userId             String      @unique
-  handle             String      @unique
-  type               String // "brand" | "individual"
-  bio                String?
-  links              String[]
-  verificationLevel  String? // "none" | "badge" | "partner"
-  status             String      @default("ACTIVE")
-  contentPolicyFlags Json?
-  decorators         Decorator[] @relation(name: "DecoratorCreator")
-  createdAt          DateTime    @default(now())
-  updatedAt          DateTime    @updatedAt
-
-  posts     Post[]   @relation(name: "CreatorProfilePosts")
-  followers Follow[] @relation("CreatorFollowers")
-  users     User[]   @relation(name: "UserCreatorProfile")
+  sessions Session[] @relation(name: "UserSessions")
+  follows  Follow[]  @relation(name: "UserFollows")
+  likes    Like[]    @relation(name: "UserLikes")
+  comments Comment[] @relation(name: "UserComments")
+  posts    Post[]    @relation(name: "UserPosts")
 }
 
 model Session {
@@ -187,47 +160,58 @@ model Session {
 // ---------------------- Memorials ---------------------------
 
 model Memorial {
-  id                 String             @id @default(auto()) @map("_id") @db.ObjectId
-  slug               String             @unique
-  shortId            String?            @unique
-  ownerUserId        String
-  displayName        String
-  coverAssetUrl      String?
-  coverAssetId       String?            @db.ObjectId
-  salutation         String?
-  yearOfBirth        Int?
-  yearOfPassing      Int?
-  theme              String?            @default("default")
-  location           Location?
-  bioSummary         String?
-  tags               String[]
-  visibility         Visibility         @default(PUBLIC)
-  status             MemorialStatus     @default(ACTIVE)
-  verificationStatus VerificationStatus @default(UNVERIFIED)
-  iosAppUrl          String?
-  androidAppUrl      String?
-  shareUrl           String?
-  shortUrl           String?
-
-  // obituary service integration
+  id                       String              @id @default(auto()) @map("_id") @db.ObjectId
+  slug                     String              @unique
+  shortId                  String?             @unique
+  ownerUserId              String
+  displayName              String
+  coverAssetUrl            String?
+  coverAssetId             String?             @db.ObjectId
+  salutation               String?
+  yearOfBirth              Int?
+  yearOfPassing            Int?
+  theme                    String?             @default("default")
+  location                 Location?
+  bioSummary               String?
+  tags                     String[]
+  visibility               Visibility          @default(PUBLIC)
+  status                   MemorialStatus      @default(ACTIVE)
+  verificationStatus       VerificationStatus  @default(UNVERIFIED)
+  iosAppUrl                String?
+  androidAppUrl            String?
+  shareUrl                 String?
+  shortUrl                 String?
   obituaryId               String? // latest obituary draft ID
   obituaryServiceSessionId String? // questionnaire session ID
-
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-  archivedAt DateTime?
-
-  // back-relations
-  verificationCase VerificationCase?   @relation(name: "MemorialVerification")
-  fundraising      FundraisingProgram? @relation(name: "MemorialFundraising")
-  postsPrimary     Post[]              @relation(name: "PostMemorialPrimary")
-  postsContext     Post[]              @relation(name: "PostMemorialContext")
-  events           Event[]             @relation(name: "MemorialEvents")
-  feeds            Feed[]              @relation(name: "MemorialFeeds")
+  createdAt                DateTime            @default(now())
+  updatedAt                DateTime            @updatedAt
+  archivedAt               DateTime?
+  verificationCase         VerificationCase?   @relation(name: "MemorialVerification")
+  fundraising              FundraisingProgram? @relation(name: "MemorialFundraising")
+  posts                    Post[]              @relation(name: "PostMemorialPrimary")
+  events                   Event[]             @relation(name: "MemorialEvents")
 
   @@index([displayName])
   @@index([verificationStatus, status])
   @@index([location])
+}
+
+model PublishedObituary {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  memorialId  String   @db.ObjectId
+  draftId     String   @db.ObjectId
+  sessionId   String?  @db.ObjectId
+  tone        String
+  length      String
+  content     String
+  wordCount   Int?
+  version     Int?
+  publishedAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([memorialId])
+  @@index([draftId])
 }
 
 type Location {
@@ -362,6 +346,7 @@ model FundraisingProgram {
   status                      FundraisingStatus @default(ACTIVE)
   feePlanId                   String?
   connectAccountId            String?
+  stripeCustomerId            String? // Customer for payout bank account setup
   beneficiaryType             String?
   beneficiaryName             String?
   beneficiaryExternalId       String?
@@ -417,111 +402,43 @@ model PayoutMirror {
 
 // ---------------------- Posts (Consolidated) ----------------
 
-model Post {
-  id String @id @default(auto()) @map("_id") @db.ObjectId
-
-  type PostType // TRIBUTE | CREATOR
-
-  // authorship
-  authorUserId String?         @db.ObjectId
-  // optional creator profile (for CREATOR posts)
-  creatorId    String?         @db.ObjectId
-  creator      CreatorProfile? @relation(name: "CreatorProfilePosts", fields: [creatorId], references: [id])
-
-  // memorial links
-  memorialId String?   @db.ObjectId // primary memorial (TRIBUTE)
-  memorial   Memorial? @relation(name: "PostMemorialPrimary", fields: [memorialId], references: [id])
-
-  memorialContextId String?   @db.ObjectId // optional targeting for CREATOR posts
-  memorialContext   Memorial? @relation(name: "PostMemorialContext", fields: [memorialContextId], references: [id])
-
-  // content
-  title            String?
-  caption          String?
-  body             String?
-  composition      PostComposition?
-  assetRefs        String[] // content-service assets
-  thumbnailAssetId String?
-  thumbnailUrl     String?
-  categories       String[]
-  tags             String[]
-  durationMs       Int?
-
-  visibility  Visibility @default(PUBLIC)
-  status      PostStatus @default(DRAFT)
-  publishedAt DateTime?
-
-  metrics PostMetrics?
-
-  // livestream back-rel (FK on LivestreamSession)
-  livestream LivestreamSession? @relation(name: "PostLivestream")
-
-  // feed entries and analytics back-relations
-  feedEntries FeedEntry[] @relation(name: "FeedPostEntries")
-  feedEvents  FeedEvent[] @relation(name: "FeedEventPost")
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  feeds     Feed[]   @relation(name: "PostFeeds")
-
-  @@index([type, status, publishedAt])
-  @@index([memorialId, publishedAt])
-  @@index([memorialContextId, publishedAt])
-}
-
-type PostComposition {
-  baseMedia BaseMedia?
-  overlays  Overlay[]
-  filter    PostFilter?
-  version   Int?
-}
-
 type BaseMedia {
-  type        String // "image" | "video"
-  assetId     String?
-  url         String?
-  aspectRatio Float?
-  scale       Float?
-  x           Float?
-  y           Float?
+  mediaType     String // "image" | "video"
+  assetId       String
+  url           String
+  aspectRatio   Float?
+  durationMs    Int?
+  parentAssetId String?
 }
 
-type Overlay {
-  id       String?
-  type     String // "text" | "sticker"
-  assetId  String?
-  text     String?
-  x        Float
-  y        Float
-  scale    Float?
-  rotation Float?
-  color    String?
-  zIndex   Int?
-}
+model Post {
+  id           String             @id @default(auto()) @map("_id") @db.ObjectId
+  authorUserId String?            @db.ObjectId
+  author       User?              @relation(name: "UserPosts", fields: [authorUserId], references: [id])
+  memorialId   String?            @db.ObjectId // primary memorial (TRIBUTE)
+  memorial     Memorial?          @relation(name: "PostMemorialPrimary", fields: [memorialId], references: [id])
+  caption      String?
+  baseMedia    BaseMedia?
+  thumbnail    BaseMedia?
+  tags         String[]
+  durationMs   Int?
+  visibility   Visibility         @default(PUBLIC)
+  status       PostStatus         @default(DRAFT)
+  publishedAt  DateTime?
+  metrics      PostMetrics?
+  livestream   LivestreamSession? @relation(name: "PostLivestream")
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
 
-type PostFilter {
-  id        String
-  intensity Float
-}
-
-type StoryLayer {
-  id        String        @default(uuid())
-  type      ContentFormat
-  assetId   String?
-  text      String?
-  startMs   Int?
-  endMs     Int?
-  transform Json?
-  style     Json?
-  zIndex    Int?
-  extras    Json?
+  @@index([status, publishedAt])
+  @@index([memorialId, publishedAt])
 }
 
 type PostMetrics {
   impressions Int @default(0)
   clicks      Int @default(0)
   watchTimeMs Int @default(0)
-  likes       Int @default(0) // can mirror counts from Like
+  likes       Int @default(0)
   flags       Int @default(0)
 }
 
@@ -537,9 +454,7 @@ model Follow {
   targetId      String           @db.ObjectId
   notifications String?
 
-  createdAt        DateTime        @default(now())
-  creatorProfile   CreatorProfile? @relation(name: "CreatorFollowers", fields: [creatorProfileId], references: [id])
-  creatorProfileId String?         @db.ObjectId
+  createdAt DateTime @default(now())
 
   @@unique([userId, targetType, targetId])
   @@index([targetType, targetId])
@@ -702,151 +617,10 @@ model EventMedia {
   @@index([eventId, kind])
 }
 
-// ---------------------- Unified Feeds -----------------------
-
-model Feed {
-  id String @id @default(auto()) @map("_id") @db.ObjectId
-
-  type FeedType
-
-  // Optional scope — set based on type
-  ownerUserId String? @db.ObjectId
-  ownerUser   User?   @relation(name: "UserFeeds", fields: [ownerUserId], references: [id])
-
-  memorialId String?   @db.ObjectId
-  memorial   Memorial? @relation(name: "MemorialFeeds", fields: [memorialId], references: [id])
-
-  postId String? @db.ObjectId
-  post   Post?   @relation(name: "PostFeeds", fields: [postId], references: [id])
-
-  category  String?
-  filter    Json?
-  proximity Proximity?
-
-  status       FeedStatus @default(ACTIVE)
-  feedKey      String?    @unique
-  expiresAt    DateTime?
-  refreshAfter DateTime?
-
-  title       String?
-  description String?
-  extras      Json?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  entries FeedEntry[] @relation(name: "FeedEntries")
-  events  FeedEvent[] @relation(name: "FeedEvents")
-
-  @@index([type])
-  @@index([status, expiresAt])
-  @@index([ownerUserId, type])
-  @@index([memorialId, type])
-  @@index([postId, type])
-  @@index([category, type])
-}
-
 type Proximity {
   lat     Float
   lng     Float
   radiusM Int
-}
-
-model FeedEntry {
-  id String @id @default(auto()) @map("_id") @db.ObjectId
-
-  feedId String @db.ObjectId
-  feed   Feed   @relation(name: "FeedEntries", fields: [feedId], references: [id])
-
-  postId String @db.ObjectId
-  post   Post   @relation(name: "FeedPostEntries", fields: [postId], references: [id])
-
-  publishedAt DateTime
-  score       Float?
-  reasons     String[]
-
-  createdAt DateTime @default(now())
-
-  @@index([feedId, publishedAt])
-  @@index([postId])
-  @@index([score])
-}
-
-model FeedEvent {
-  id String @id @default(auto()) @map("_id") @db.ObjectId
-
-  feedId String @db.ObjectId
-  feed   Feed   @relation(name: "FeedEvents", fields: [feedId], references: [id])
-
-  postId String? @db.ObjectId
-  post   Post?   @relation(name: "FeedEventPost", fields: [postId], references: [id])
-
-  userId String? @db.ObjectId
-  user   User?   @relation(name: "FeedEventUser", fields: [userId], references: [id])
-
-  eventType FeedEventType
-  at        DateTime      @default(now())
-
-  sessionId String?
-  device    String?
-  extras    Json?
-
-  @@index([feedId, at])
-  @@index([eventType, at])
-  @@index([userId, at])
-  @@index([postId, at])
-}
-
-model FeedDailyStats {
-  id String @id @default(auto()) @map("_id") @db.ObjectId
-
-  feedId      String   @db.ObjectId
-  date        DateTime
-  impressions Int      @default(0)
-  opens       Int      @default(0)
-  scrolls     Int      @default(0)
-  clicks      Int      @default(0)
-  byType      Json?
-
-  updatedAt DateTime @updatedAt
-  createdAt DateTime @default(now())
-
-  @@unique([feedId, date])
-  @@index([date])
-}
-
-enum DecoratorType {
-  STICKER
-  FILTER
-  SOUND
-  BACKGROUND
-  OTHER
-}
-
-enum DecoratorSource {
-  SYSTEM
-  CREATOR
-  SPONSORED
-}
-
-// for the story creation toolkit
-model Decorator {
-  id          String          @id @default(auto()) @map("_id") @db.ObjectId
-  type        DecoratorType   @default(OTHER)
-  source      DecoratorSource @default(SYSTEM)
-  creatorId   String?         @db.ObjectId
-  creator     CreatorProfile? @relation(name: "DecoratorCreator", fields: [creatorId], references: [id])
-  assetId     String
-  assetUrl    String
-  width       Int?
-  height      Int?
-  tags        String[]
-  metadata    Json?
-  priority    Int             @default(0)
-  publishedAt DateTime        @default(now())
-  expiredAt   DateTime?
-
-  @@index([type])
 }
 
 // ---------------------- Audit & Logs -------------------------

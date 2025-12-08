@@ -389,6 +389,9 @@ OBITUARY_SERVICE_URL="http://localhost:3020"
 OBITUARY_CLIENT_ID="afterlife-service-client"
 OBITUARY_CLIENT_SECRET="your-obituary-client-secret"
 
+# Google Maps (Places API)
+GOOGLE_MAPS_API_KEY="your-google-maps-api-key"
+
 # ==================== Google Cloud Platform ====================
 
 GCP_PROJECT_ID="your-gcp-project"

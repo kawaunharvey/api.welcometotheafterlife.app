@@ -11,6 +11,9 @@ import {
 } from "class-validator";
 import { Type } from "class-transformer";
 
+export const UploadVisibility = ["PUBLIC", "UNLISTED", "PRIVATE"] as const;
+export type UploadVisibility = (typeof UploadVisibility)[number];
+
 export class FileMetaDto {
   @ApiProperty({ description: "Original filename" })
   @IsString()
@@ -40,10 +43,10 @@ export class CreateUploadBootstrapDto {
 
   @ApiProperty({
     description: "Visibility level of uploaded content",
-    enum: ["PUBLIC", "PRIVATE"],
+    enum: UploadVisibility,
   })
-  @IsEnum(["PUBLIC", "PRIVATE"])
-  visibility!: "PUBLIC" | "PRIVATE";
+  @IsEnum(UploadVisibility)
+  visibility!: UploadVisibility;
   @ApiPropertyOptional({
     description:
       "Whether to apply image flipping based on EXIF orientation metadata",
@@ -58,6 +61,11 @@ export class UploadSessionDto {
 
   @ApiProperty({ description: "Pre-signed URL for direct upload" })
   uploadUrl!: string;
+
+  @ApiPropertyOptional({
+    description: "Headers required for the signed upload URL",
+  })
+  signedHeaders?: Record<string, string>;
 
   @ApiProperty({ description: "Object name/key in storage" })
   objectName!: string;
@@ -100,8 +108,14 @@ export class UploadCompletionResultDto {
   @ApiProperty({ description: "Upload session ID" })
   sessionId!: string;
 
+  @ApiPropertyOptional({ description: "Raw asset id from Content Service" })
+  id?: string;
+
   @ApiProperty({ description: "Resulting asset ID from Content Service" })
   assetId!: string;
+
+  @ApiPropertyOptional({ description: "Raw storage path from Content Service" })
+  storagePath?: string;
 
   @ApiProperty({ description: "Object name" })
   objectName!: string;

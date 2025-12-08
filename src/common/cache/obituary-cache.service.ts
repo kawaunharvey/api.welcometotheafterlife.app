@@ -109,6 +109,7 @@ export class ObituaryCacheService {
   async cacheLatestDraft(
     sessionId: string,
     draft: GenerateDraftResponse | GetDraftResponse,
+    ttlSeconds?: number,
   ): Promise<void> {
     const key = this.KEYS.LATEST_DRAFT_BY_SESSION(sessionId);
     const tags = [
@@ -117,10 +118,12 @@ export class ObituaryCacheService {
       this.CACHE_TAGS.OBITUARY,
     ];
 
+    const ttl = ttlSeconds ?? this.CACHE_TTL.LATEST_DRAFT;
+
     // Cache both the latest draft reference and the draft itself
     await Promise.all([
       this.cache.set(key, draft, {
-        ttl: this.CACHE_TTL.LATEST_DRAFT,
+        ttl,
         tags,
       }),
       this.cacheDraft(draft),

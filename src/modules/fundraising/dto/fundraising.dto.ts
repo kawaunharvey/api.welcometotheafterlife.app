@@ -122,6 +122,67 @@ export class StartBeneficiaryOnboardingDto {
   @IsOptional()
   @IsString()
   email?: string;
+
+  @IsOptional()
+  @IsString()
+  phone?: string;
+
+  @IsOptional()
+  @IsString()
+  ssnLast4?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  dobDay?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  dobMonth?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1900)
+  @Type(() => Number)
+  dobYear?: number;
+
+  @IsOptional()
+  @IsString()
+  addressLine1?: string;
+
+  @IsOptional()
+  @IsString()
+  addressLine2?: string;
+
+  @IsOptional()
+  @IsString()
+  city?: string;
+
+  @IsOptional()
+  @IsString()
+  state?: string;
+
+  @IsOptional()
+  @IsString()
+  postalCode?: string;
+
+  @IsOptional()
+  @IsString()
+  country?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  tosDate?: number;
+}
+
+export class StartFinancialConnectionsSessionDto {
+  @IsOptional()
+  @IsUrl()
+  returnUrl?: string;
 }
 
 export class RequestPayoutDto {
@@ -177,4 +238,5 @@ export interface BeneficiaryStatusDto {
   beneficiaryName: string | null;
   beneficiaryOnboardingStatus: string;
   connectAccountId: string | null;
+  stripeCustomerId: string | null;
 }

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
-import { PostType, PostStatus } from "@prisma/client";
+import { PostStatus } from "@prisma/client";
 import { RedisService } from "../redis/redis.service";
 import { Policy } from "./app-data.types";
 
@@ -111,7 +111,6 @@ export class AppDataService {
   async getCreatorPosts(creatorId: string, tags?: string[], limit = 20) {
     const where = {
       creatorId,
-      type: PostType.CREATOR,
       status: PostStatus.PUBLISHED,
       ...(tags && tags.length > 0 ? { tags: { hasSome: tags } } : {}),
     };

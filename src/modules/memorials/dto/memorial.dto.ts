@@ -261,9 +261,6 @@ export class MemorialResponseDto {
   @ApiPropertyOptional({ description: "Obituary service session ID" })
   obituaryServiceSessionId?: string | null;
 
-  @ApiPropertyOptional()
-  feedId?: string;
-
   @ApiPropertyOptional({ description: "Cover asset URL" })
   coverAssetUrl?: string | null;
 
@@ -294,5 +291,13 @@ export class MemorialResponseDto {
     androidAppUrl?: string;
     webUrl?: string;
     shortUrl?: string;
+  };
+
+  @ApiPropertyOptional({ description: "Fundraising information" })
+  fundraising?: {
+    id: string;
+    beneficiaryName?: string | null;
+    beneficiaryOnboardingStatus?: string | null;
+    beneficiaryExternalId?: string | null;
   };
 }

@@ -4,22 +4,22 @@ import {
   IsOptional,
   IsArray,
   IsEnum,
-  ValidateNested,
   MaxLength,
   Min,
   IsNumber,
   IsUrl,
+  ValidateNested,
 } from "class-validator";
+import { Visibility, PostStatus, BaseMedia } from "@prisma/client";
 import { Type } from "class-transformer";
-import { Visibility, PostStatus } from "@prisma/client";
 
 export class BaseMediaDto {
   @ApiProperty({
     description: "Media type",
-    enum: ["image", "video"],
+    enum: ["photo", "video"],
   })
-  @IsEnum(["image", "video"])
-  type!: "image" | "video";
+  @IsEnum(["photo", "video"])
+  mediaType!: "photo" | "video";
 
   @ApiPropertyOptional({ description: "Content Service asset ID" })
   @IsOptional()
@@ -36,22 +36,6 @@ export class BaseMediaDto {
   @IsNumber()
   @Min(0)
   aspectRatio?: number;
-
-  @ApiPropertyOptional({ description: "Scale factor" })
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  scale?: number;
-
-  @ApiPropertyOptional({ description: "X position" })
-  @IsOptional()
-  @IsNumber()
-  x?: number;
-
-  @ApiPropertyOptional({ description: "Y position" })
-  @IsOptional()
-  @IsNumber()
-  y?: number;
 }
 
 export class OverlayDto {
@@ -119,73 +103,21 @@ export class FilterDto {
   intensity!: number;
 }
 
-export class CompositionDto {
-  @ApiPropertyOptional({ description: "Base media layer" })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => BaseMediaDto)
-  baseMedia?: BaseMediaDto;
-
-  @ApiPropertyOptional({
-    description: "Overlay elements (text, stickers)",
-    type: [OverlayDto],
-  })
-  @IsOptional()
-  @IsArray()
-  @ValidateNested({ each: true })
-  @Type(() => OverlayDto)
-  overlays?: OverlayDto[];
-
-  @ApiPropertyOptional({ description: "Applied filter" })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => FilterDto)
-  filter?: FilterDto;
-
-  @ApiPropertyOptional({ description: "Composition version" })
-  @IsOptional()
-  @IsNumber()
-  version?: number;
-}
-
 export class CreatePostDto {
-  @ApiProperty({ description: "Post type", enum: ["TRIBUTE"] })
-  @IsEnum(["TRIBUTE"])
-  type!: "TRIBUTE";
-
   @ApiPropertyOptional({ description: "Memorial ID" })
   @IsOptional()
   @IsString()
   memorialId?: string;
 
-  @ApiPropertyOptional({ description: "Post title" })
-  @IsOptional()
-  @IsString()
-  @MaxLength(255)
-  title?: string;
-
-  @ApiPropertyOptional({ description: "Caption/summary" })
-  @IsOptional()
+  @ApiProperty({ description: "Caption/summary" })
   @IsString()
   @MaxLength(5000)
-  caption?: string;
+  caption!: string;
 
-  @ApiPropertyOptional({
-    description: "Post composition (media, overlays, filters)",
-  })
-  @IsOptional()
+  @ApiProperty({ description: "Base media for the post" })
   @ValidateNested()
-  @Type(() => CompositionDto)
-  composition?: CompositionDto;
-
-  @ApiPropertyOptional({
-    description: "Array of Content Service asset IDs used in this post",
-    type: [String],
-  })
-  @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
-  assetRefs?: string[];
+  @Type(() => BaseMediaDto)
+  baseMedia!: BaseMedia;
 
   @ApiPropertyOptional({
     description: "Tags for categorization",
@@ -195,15 +127,6 @@ export class CreatePostDto {
   @IsArray()
   @IsString({ each: true })
   tags?: string[];
-
-  @ApiPropertyOptional({
-    description: "Categories",
-    type: [String],
-  })
-  @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
-  categories?: string[];
 
   @ApiPropertyOptional({
     description: "Visibility level",
@@ -236,23 +159,6 @@ export class UpdatePostDto {
   caption?: string;
 
   @ApiPropertyOptional({
-    description: "Updated composition (media, overlays, filters)",
-  })
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => CompositionDto)
-  composition?: CompositionDto;
-
-  @ApiPropertyOptional({
-    description: "Updated asset references",
-    type: [String],
-  })
-  @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
-  assetRefs?: string[];
-
-  @ApiPropertyOptional({
     description: "Updated tags",
     type: [String],
   })
@@ -260,15 +166,6 @@ export class UpdatePostDto {
   @IsArray()
   @IsString({ each: true })
   tags?: string[];
-
-  @ApiPropertyOptional({
-    description: "Updated categories",
-    type: [String],
-  })
-  @IsOptional()
-  @IsArray()
-  @IsString({ each: true })
-  categories?: string[];
 
   @ApiPropertyOptional({
     description: "Updated visibility",
@@ -308,9 +205,6 @@ export class PostResponseDto {
   @ApiProperty({ description: "Post ID" })
   id!: string;
 
-  @ApiProperty({ description: "Post type" })
-  type!: string;
-
   @ApiProperty({ description: "Author user ID" })
   authorUserId!: string;
 
@@ -322,11 +216,6 @@ export class PostResponseDto {
 
   @ApiPropertyOptional({ description: "Caption" })
   caption?: string;
-
-  @ApiPropertyOptional({
-    description: "Post composition (media, overlays, filters)",
-  })
-  composition?: CompositionDto;
 
   @ApiPropertyOptional({
     description: "Asset references",
