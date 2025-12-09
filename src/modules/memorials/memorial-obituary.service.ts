@@ -210,11 +210,84 @@ export class MemorialObituaryService {
     const latestPublished = await this.prisma.publishedObituary.findFirst({
       where: { memorialId },
       orderBy: { publishedAt: "desc" },
-      select: { id: true },
+      select: { id: true, caption: true, draftId: true },
     });
     const publishedObituaryId =
       latestPublished?.id ?? memorial.obituaryId ?? null;
     const isPublished = Boolean(publishedObituaryId);
+
+    type CaptionVariant = unknown;
+    let publishedCaptions: CaptionVariant[] | null = null;
+    if (latestPublished?.caption?.captionText) {
+      try {
+        const parsed = JSON.parse(latestPublished.caption.captionText);
+        publishedCaptions = Array.isArray(parsed) ? parsed : null;
+      } catch (error) {
+        this.logger.warn(
+          `getObituaryStatus - failed to parse published captions for memorial=${memorialId}: ${error}`,
+        );
+      }
+    }
+
+    // Backfill captions from obituary service if published but missing
+    if (isPublished && !publishedCaptions && latestPublished?.draftId) {
+      try {
+        const upstream = await this.obituaryClient.getCaptions(
+          latestPublished.draftId,
+        );
+        const captions = upstream.captions ?? [];
+        publishedCaptions = Array.isArray(captions) ? captions : null;
+
+        if (publishedCaptions) {
+          await this.prisma.publishedObituary.update({
+            where: { id: latestPublished.id },
+            data: {
+              caption: {
+                draftId: upstream.draftId ?? latestPublished.draftId,
+                captionText: JSON.stringify(publishedCaptions),
+                createdAt: upstream.createdAt
+                  ? new Date(upstream.createdAt)
+                  : new Date(),
+              },
+            },
+          });
+        }
+      } catch (error: any) {
+        const status = error?.response?.status;
+        if (status === 404 && latestPublished?.draftId) {
+          try {
+            const generated = await this.obituaryClient.generateCaptions(
+              latestPublished.draftId,
+            );
+            const captions = generated.captions ?? [];
+            publishedCaptions = Array.isArray(captions) ? captions : null;
+
+            if (publishedCaptions) {
+              await this.prisma.publishedObituary.update({
+                where: { id: latestPublished.id },
+                data: {
+                  caption: {
+                    draftId: generated.draftId ?? latestPublished.draftId,
+                    captionText: JSON.stringify(publishedCaptions),
+                    createdAt: generated.createdAt
+                      ? new Date(generated.createdAt)
+                      : new Date(),
+                  },
+                },
+              });
+            }
+          } catch (genError) {
+            this.logger.warn(
+              `getObituaryStatus - failed to generate captions for memorial=${memorialId} draft=${latestPublished.draftId}: ${genError}`,
+            );
+          }
+        } else {
+          this.logger.warn(
+            `getObituaryStatus - failed to fetch captions for memorial=${memorialId} draft=${latestPublished?.draftId}: ${error}`,
+          );
+        }
+      }
+    }
 
     // Try cached memorial->session mapping first
     let sessionId =
@@ -232,6 +305,7 @@ export class MemorialObituaryService {
         hasActive: false,
         published: isPublished,
         obituaryId: publishedObituaryId,
+        publishedCaptions,
         status: isPublished ? "published" : "none",
       } as const;
     }
@@ -313,6 +387,7 @@ export class MemorialObituaryService {
       progress: session.progress ?? null,
       published: isPublished,
       obituaryId: publishedObituaryId,
+      publishedCaptions,
     };
   }
 
@@ -597,7 +672,46 @@ export class MemorialObituaryService {
       );
     }
 
-    // Persist published copy
+    // Fetch or generate captions so we can store them alongside the published obituary
+    let captionPayload: {
+      draftId: string;
+      captionText: string;
+      createdAt: Date;
+    } | null = null;
+    try {
+      const captionResponse = await this.obituaryClient.getCaptions(draftId);
+      captionPayload = {
+        draftId,
+        captionText: JSON.stringify(captionResponse.captions ?? []),
+        createdAt: captionResponse.createdAt
+          ? new Date(captionResponse.createdAt)
+          : new Date(),
+      };
+    } catch (error: any) {
+      const status = error?.response?.status;
+      if (status === 404) {
+        try {
+          const generated = await this.obituaryClient.generateCaptions(draftId);
+          captionPayload = {
+            draftId,
+            captionText: JSON.stringify(generated.captions ?? []),
+            createdAt: generated.createdAt
+              ? new Date(generated.createdAt)
+              : new Date(),
+          };
+        } catch (genError) {
+          this.logger.warn(
+            `publishDraft - failed to generate captions for draft ${draftId}: ${genError}`,
+          );
+        }
+      } else {
+        this.logger.warn(
+          `publishDraft - failed to fetch captions for draft ${draftId}: ${error}`,
+        );
+      }
+    }
+
+    // Persist published copy (attach captions when available)
     const published = await this.prisma.publishedObituary.create({
       data: {
         memorialId,
@@ -608,6 +722,15 @@ export class MemorialObituaryService {
         content: draft.content,
         wordCount: draft.metadata?.wordCount,
         version,
+        ...(captionPayload
+          ? {
+              caption: {
+                draftId: captionPayload.draftId,
+                captionText: captionPayload.captionText,
+                createdAt: captionPayload.createdAt,
+              },
+            }
+          : {}),
       },
     });
 

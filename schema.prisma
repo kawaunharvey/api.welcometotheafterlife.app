@@ -196,19 +196,26 @@ model Memorial {
   @@index([location])
 }
 
-model PublishedObituary {
-  id          String   @id @default(auto()) @map("_id") @db.ObjectId
-  memorialId  String   @db.ObjectId
+type ObituaryCaption {
   draftId     String   @db.ObjectId
-  sessionId   String?  @db.ObjectId
+  captionText String   @db.String
+  createdAt   DateTime @default(now())
+}
+
+model PublishedObituary {
+  id          String           @id @default(auto()) @map("_id") @db.ObjectId
+  memorialId  String           @db.ObjectId
+  draftId     String           @db.ObjectId
+  sessionId   String?          @db.ObjectId
+  caption     ObituaryCaption?
   tone        String
   length      String
   content     String
   wordCount   Int?
   version     Int?
-  publishedAt DateTime @default(now())
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  publishedAt DateTime         @default(now())
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
 
   @@index([memorialId])
   @@index([draftId])
