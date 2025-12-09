@@ -173,6 +173,11 @@ export class PostsService {
 
   private mapToResponse(post: Post): PostResponseDto {
     const metrics = post.metrics as Record<string, number>;
+    const shareBase =
+      process.env.SHARE_BASE_URL || "https://share.welcometotheafterlife.app";
+    const iosBase = process.env.IOS_APP_SCHEMA || "theafterlife";
+    const androidBase =
+      process.env.ANDROID_APP_SCHEMA || "com.thehereafter.afterlife";
     return {
       id: post.id,
       authorUserId: post.authorUserId || "",
@@ -182,6 +187,11 @@ export class PostsService {
       visibility: post.visibility,
       status: post.status,
       publishedAt: post.publishedAt?.toISOString(),
+      links: {
+        webUrl: `${shareBase}/p/${post.id}`,
+        iosAppUrl: `${iosBase}://tributes/?startsWith=${post.id}`,
+        androidAppUrl: `${androidBase}://tributes/?startsWith=${post.id}`,
+      },
       metrics: {
         impressions: (metrics?.impressions ?? 0) as number,
         clicks: (metrics?.clicks ?? 0) as number,

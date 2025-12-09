@@ -229,6 +229,13 @@ export class PostResponseDto {
   })
   tags?: string[];
 
+  @ApiPropertyOptional({ description: "Links" })
+  links?: {
+    webUrl: string;
+    iosAppUrl?: string;
+    androidAppUrl?: string;
+  };
+
   @ApiPropertyOptional({
     description: "Categories",
     type: [String],

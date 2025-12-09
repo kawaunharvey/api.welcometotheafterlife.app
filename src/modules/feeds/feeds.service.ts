@@ -25,6 +25,11 @@ export interface FeedEntryWithPost {
       handle?: string | null;
       imageUrl?: string | null;
     };
+    links: {
+      webUrl: string;
+      iosAppUrl?: string;
+      androidAppUrl?: string;
+    };
     visibility: string;
     status: string;
     baseMediaUrl?: string;
@@ -347,6 +352,11 @@ export class FeedsService {
     const normalizedReasons = reasons.length ? [...reasons] : ["RECENT_POST"];
     const entryId = this.generateEntryId(post.id, post.memorialId ?? "GLOBAL");
 
+    const shareBase =
+      process.env.SHARE_BASE_URL || "https://share.welcometotheafterlife.app";
+    const iosBase = process.env.IOS_APP_SCHEMA || "theafterlife";
+    const androidBase =
+      process.env.ANDROID_APP_SCHEMA || "com.thehereafter.afterlife";
     return {
       id: entryId,
       publishedAt: post.publishedAt ?? post.createdAt,
@@ -358,6 +368,11 @@ export class FeedsService {
         tags: post.tags ?? [],
         visibility: post.visibility,
         status: post.status,
+        links: {
+          webUrl: `${shareBase}/p/${post.id}`,
+          iosAppUrl: `${iosBase}://tributes/?startsWith=${post.id}`,
+          androidAppUrl: `${androidBase}://tributes/?startsWith=${post.id}`,
+        },
         author: {
           id: post.author?.id as string,
           handle: post.author?.handle,

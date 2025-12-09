@@ -21,6 +21,10 @@ import {
   LikeResponseDto,
   CreateCommentDto,
   CommentResponseDto,
+  ListCommentsQueryDto,
+  PaginatedCommentsResponseDto,
+  LikeStatusQueryDto,
+  LikeStatusResponseDto,
 } from "./dto/interaction.dto";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import {
@@ -36,13 +40,25 @@ export class InteractionsController {
   @Post("likes")
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: "Toggle like on a post (idempotent)" })
+  @ApiOperation({ summary: "Toggle like on a post or comment (idempotent)" })
   @ApiCreatedResponse({ type: LikeResponseDto })
   async toggleLike(
     @Body() dto: CreateLikeDto,
     @CurrentUser() user: CurrentUserContext,
   ): Promise<LikeResponseDto> {
     return this.interactionsService.toggleLike(user.userId, dto);
+  }
+
+  @Get("likes/status")
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Check like status for a post or comment" })
+  @ApiOkResponse({ type: LikeStatusResponseDto })
+  async getLikeStatus(
+    @Query() query: LikeStatusQueryDto,
+    @CurrentUser() user: CurrentUserContext,
+  ): Promise<LikeStatusResponseDto> {
+    return this.interactionsService.getLikeStatus(user.userId, query);
   }
 
   @Post("comments")
@@ -58,13 +74,13 @@ export class InteractionsController {
   }
 
   @Get("comments/:postId")
-  @ApiOperation({ summary: "Get comments for a post" })
-  @ApiOkResponse({ type: [CommentResponseDto] })
+  @ApiOperation({ summary: "Get comments for a post (paginated)" })
+  @ApiOkResponse({ type: PaginatedCommentsResponseDto })
   async getComments(
     @Param("postId") postId: string,
-    @Query("limit") limit?: number,
-  ): Promise<CommentResponseDto[]> {
-    return this.interactionsService.getComments(postId, limit);
+    @Query() query: ListCommentsQueryDto,
+  ): Promise<PaginatedCommentsResponseDto> {
+    return this.interactionsService.getComments(postId, query);
   }
 
   @Delete("comments/:commentId")

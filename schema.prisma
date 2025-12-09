@@ -90,6 +90,7 @@ enum FollowTargetType {
 
 enum LikeTargetType {
   POST
+  COMMENT
 }
 
 enum CommentTargetType {
