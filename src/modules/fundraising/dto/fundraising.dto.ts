@@ -1,6 +1,22 @@
 import { IsString, IsInt, IsOptional, Min, IsIn, IsUrl } from "class-validator";
 import { Type } from "class-transformer";
 
+export class QuoteFeesDto {
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  amountCents: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Type(() => Number)
+  tipCents?: number = 0;
+
+  @IsOptional()
+  coverPlatformFee?: boolean = false;
+}
+
 export class CreateFundraisingProgramDto {
   @IsString()
   memorialId: string;
@@ -98,9 +114,19 @@ export class CreateDonationPaymentIntentDto {
   amountCents: number;
 
   @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Type(() => Number)
+  tipCents?: number = 0;
+
+  @IsOptional()
   @IsString()
   @IsIn(["USD"])
   currency?: string = "USD";
+
+  @IsOptional()
+  @Type(() => Boolean)
+  coverPlatformFee?: boolean = false;
 
   @IsOptional()
   @IsString()
@@ -108,7 +134,18 @@ export class CreateDonationPaymentIntentDto {
 
   @IsOptional()
   @IsString()
+  donorName?: string;
+
+  @IsOptional()
+  @IsString()
+  donorEmail?: string;
+
+  @IsOptional()
+  @IsString()
   message?: string;
+
+  @IsOptional()
+  isAnonymous?: boolean;
 }
 
 export class StartBeneficiaryOnboardingDto {
@@ -233,10 +270,32 @@ export interface PayoutListItemDto {
   failureReason: string | null;
 }
 
+export interface PayoutMethodDto {
+  hasBankAccount: boolean;
+  bankLast4: string | null;
+  bankName: string | null;
+  bankCountry: string | null;
+  bankCurrency: string | null;
+  institutionName: string | null;
+  payoutsEnabled: boolean;
+  accountStatus: string | null;
+}
+
 export interface BeneficiaryStatusDto {
   beneficiaryType: string | null;
   beneficiaryName: string | null;
   beneficiaryOnboardingStatus: string;
   connectAccountId: string | null;
   stripeCustomerId: string | null;
+}
+
+export interface FeeQuoteDto {
+  amountCents: number;
+  tipCents: number;
+  platformFeeCents: number;
+  stripeFeeCents: number;
+  totalChargeCents: number;
+  netBeneficiaryCents: number;
+  currency: string;
+  coversPlatformFee: boolean;
 }

@@ -27,6 +27,9 @@ import {
   DonationListItemDto,
   PayoutListItemDto,
   BeneficiaryStatusDto,
+  QuoteFeesDto,
+  FeeQuoteDto,
+  PayoutMethodDto,
 } from "./dto/fundraising.dto";
 import { FundraisingProgram } from "@prisma/client";
 import { Request } from "express";
@@ -59,7 +62,9 @@ export class FundraisingController {
   @Get("programs/:memorialId")
   async getProgram(
     @Param("memorialId") memorialId: string,
-  ): Promise<FundraisingProgram | null> {
+  ): Promise<
+    (FundraisingProgram & { payoutMethod: PayoutMethodDto | null }) | null
+  > {
     this.logger.debug("Getting fundraising program", { memorialId });
 
     return this.fundraisingService.getProgramByMemorial(memorialId);
@@ -86,6 +91,19 @@ export class FundraisingController {
     this.logger.debug("Getting fundraising summary", { memorialId });
 
     return this.fundraisingService.computeSummary(memorialId);
+  }
+
+  @Get("programs/:memorialId/payout-balance")
+  async getPayoutBalance(
+    @Param("memorialId") memorialId: string,
+    @CurrentUser() user: User,
+  ) {
+    this.logger.debug("Getting payout balance", {
+      memorialId,
+      userId: user.userId,
+    });
+
+    return this.fundraisingService.getPayoutBalance(memorialId, user.userId);
   }
 
   @Get("programs/:memorialId/donations")
@@ -258,13 +276,33 @@ export class FundraisingController {
   }
 
   @Post("programs/:memorialId/beneficiary/financial-connections/attach")
+  async attachFinancialConnectionsPaymentMethod(
+    @Param("memorialId") memorialId: string,
+    @Body() dto: { paymentMethodId: string; customerId: string },
+    @CurrentUser() user: User,
+  ) {
+    this.logger.debug("Attaching payout bank", {
+      memorialId,
+      paymentMethodId: dto.paymentMethodId,
+      customerId: dto.customerId,
+      userId: user.userId,
+    });
+
+    return this.fundraisingService.attachFinancialConnection(
+      memorialId,
+      dto.paymentMethodId,
+      dto.customerId,
+      user.userId,
+    );
+  }
+
   @Post("programs/:memorialId/beneficiary/payout-bank/attach")
   async attachPayoutBank(
     @Param("memorialId") memorialId: string,
     @Body() dto: { paymentMethodId: string; customerId: string },
     @CurrentUser() user: User,
   ) {
-    this.logger.debug("Attaching payout bank", {
+    this.logger.debug("Attaching payout bank (alias endpoint)", {
       memorialId,
       paymentMethodId: dto.paymentMethodId,
       customerId: dto.customerId,
@@ -309,5 +347,16 @@ export class FundraisingController {
     });
 
     return this.fundraisingService.listPayouts(memorialId, parsedLimit, cursor);
+  }
+
+  @Post("fees/quote")
+  async quoteFees(@Body() dto: QuoteFeesDto): Promise<FeeQuoteDto> {
+    this.logger.debug("Quoting donation fees", {
+      amountCents: dto.amountCents,
+      tipCents: dto.tipCents,
+      coverPlatformFee: dto.coverPlatformFee,
+    });
+
+    return this.fundraisingService.quoteFees(dto);
   }
 }

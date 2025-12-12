@@ -185,7 +185,7 @@ export class AppDataService {
         url: process.env.APP_SUPPORT_URL,
         label: "Help & Support",
       },
-    ].filter((p) => p.url);
+    ].filter((p) => Boolean(p.url));
     // cache policies in Redis for 1 hour
     await this.cache.set(cacheKey, JSON.stringify(policyList), 3600);
     return {

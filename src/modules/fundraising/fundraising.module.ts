@@ -4,7 +4,7 @@ import { FundraisingController } from "./fundraising.controller";
 import { BillingWebhookController } from "./billing-webhook.controller";
 import { FundraisingService } from "./fundraising.service";
 import { BillingWebhookService } from "./billing-webhook.service";
-import { BillingClient } from "./clients/billing.client";
+import { BillingClient } from "../../common/http-client/billing-service.client";
 import { PrismaModule } from "../../prisma/prisma.module";
 import { AuditModule } from "../audit/audit.module";
 

@@ -35,12 +35,17 @@ export interface CreatePaymentIntentRequest {
   fundraisingId: string;
   connectAccountId?: string;
   feePlanId?: string;
+  applicationFeeAmount?: number;
+  tipAmount?: number;
+  coverPlatformFee?: boolean;
   metadata: {
     afterlifeMemorialId: string;
     afterlifeFundraisingId: string;
     donorDisplay?: string;
     message?: string;
+    donorEmail?: string;
   };
+  customerEmail?: string;
 }
 
 export interface CreatePaymentIntentResponse {
@@ -150,6 +155,16 @@ export interface CreatePayoutResponse {
   destinationSummary: string;
 }
 
+export interface PayoutBalanceResponse {
+  connectAccountId: string;
+  stripeAccountId: string;
+  livemode: boolean;
+  available: Record<string, number>;
+  pending: Record<string, number>;
+  instantAvailable?: Record<string, number>;
+  retrievedAt: string;
+}
+
 export interface GetPayoutBankInfoResponse {
   hasBankAccount: boolean;
   bankLast4: string | null;
@@ -182,6 +197,7 @@ export class BillingClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly secretKey: string;
+  private readonly tenantId?: string;
 
   // Token management
   private accessToken: string | null = null;
@@ -196,6 +212,7 @@ export class BillingClient {
       "http://localhost:3000";
     this.apiKey = this.configService.get("BILLING_SERVICE_API_KEY") || "";
     this.secretKey = this.configService.get("BILLING_SERVICE_SECRET_KEY") || "";
+    this.tenantId = this.configService.get("BILLING_TENANT_ID");
   }
 
   private handleAxiosError(context: string, error: any): never {
@@ -281,6 +298,10 @@ export class BillingClient {
       Authorization: `Bearer ${token}`,
     };
 
+    if (this.tenantId) {
+      headers["Tenant-Id"] = this.tenantId;
+    }
+
     if (idempotencyKey) {
       headers["Idempotency-Key"] = idempotencyKey;
     }
@@ -326,6 +347,9 @@ export class BillingClient {
         amountCents: request.amountCents,
         currency: request.currency,
         fundraisingId: request.fundraisingId,
+        applicationFeeAmount: request.applicationFeeAmount,
+        tipAmount: request.tipAmount,
+        coverPlatformFee: request.coverPlatformFee,
       });
 
       const headers = await this.getHeaders(idempotencyKey);
@@ -589,6 +613,26 @@ export class BillingClient {
     } catch (error) {
       this.logger.error("Failed to request payout", error);
       throw error;
+    }
+  }
+
+  async getPayoutBalance(
+    connectAccountId: string,
+  ): Promise<PayoutBalanceResponse> {
+    try {
+      this.logger.debug("Retrieving payout balance", { connectAccountId });
+
+      const headers = await this.getHeaders();
+      const response = await firstValueFrom(
+        this.httpService.get<PayoutBalanceResponse>(
+          `${this.baseUrl}/payouts/balance/${connectAccountId}`,
+          { headers },
+        ),
+      );
+
+      return response.data;
+    } catch (error) {
+      this.handleAxiosError("Failed to retrieve payout balance", error);
     }
   }
 }

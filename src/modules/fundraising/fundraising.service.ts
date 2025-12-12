@@ -9,7 +9,7 @@ import {
 import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditService } from "../audit/audit.service";
-import { BillingClient } from "./clients/billing.client";
+import { BillingClient } from "../../common/http-client/billing-service.client";
 import {
   CreateFundraisingProgramDto,
   UpdateFundraisingProgramDto,
@@ -22,6 +22,9 @@ import {
   PayoutListItemDto,
   BeneficiaryStatusDto,
   StartFinancialConnectionsSessionDto,
+  QuoteFeesDto,
+  FeeQuoteDto,
+  PayoutMethodDto,
 } from "./dto/fundraising.dto";
 import {
   assertCents,
@@ -36,6 +39,7 @@ import {
   FundraisingProgram,
   FundraisingStatus,
   DonationStatus,
+  PayoutMethod,
 } from "@prisma/client";
 
 @Injectable()
@@ -115,13 +119,27 @@ export class FundraisingService {
 
   async getProgramByMemorial(
     memorialId: string,
-  ): Promise<FundraisingProgram | null> {
-    return this.prisma.fundraisingProgram.findUnique({
-      where: { memorialId },
-      include: {
-        memorial: true,
-      },
-    });
+  ): Promise<
+    (FundraisingProgram & { payoutMethod: PayoutMethodDto | null }) | null
+  > {
+    return this.prisma.fundraisingProgram
+      .findUnique({
+        where: { memorialId },
+        include: {
+          memorial: true,
+          payoutMethod: true,
+        },
+      })
+      .then((program) =>
+        program
+          ? {
+              ...program,
+              payoutMethod: this.toPayoutMethodDto(
+                program.payoutMethod as PayoutMethod | null,
+              ),
+            }
+          : null,
+      );
   }
 
   async updateProgram(
@@ -259,6 +277,81 @@ export class FundraisingService {
     }));
   }
 
+  quoteFees(dto: QuoteFeesDto): FeeQuoteDto {
+    const amountCents = dto.amountCents;
+    const tipCents = dto.tipCents ?? 0;
+    const coversPlatformFee = !!dto.coverPlatformFee;
+
+    assertPositiveCents(amountCents);
+    assertCents(tipCents);
+
+    const platformFeeRate = Number(
+      this.configService.get<string>("PLATFORM_FEE_RATE") ?? "0.04",
+    );
+    const stripeFeeRate = Number(
+      this.configService.get<string>("STRIPE_FEE_RATE") ?? "0.029",
+    );
+    const stripeFeeFixedCents = Number(
+      this.configService.get<string>("STRIPE_FEE_FIXED_CENTS") ?? "30",
+    );
+
+    const platformFeeCents = Math.round(amountCents * platformFeeRate);
+
+    // If donor covers fees: they pay donation + tip + platform + stripe-on-top.
+    // Beneficiary gets full donation.
+    if (coversPlatformFee) {
+      const donorBaseCents = amountCents + tipCents + platformFeeCents;
+      const stripeFeeCents = Math.round(
+        donorBaseCents * stripeFeeRate + stripeFeeFixedCents,
+      );
+      const totalChargeCents = donorBaseCents + stripeFeeCents;
+
+      return {
+        amountCents,
+        tipCents,
+        platformFeeCents,
+        stripeFeeCents,
+        totalChargeCents,
+        netBeneficiaryCents: amountCents,
+        currency: "USD",
+        coversPlatformFee,
+      };
+    }
+
+    // If donor does NOT cover fees: they pay donation + tip. Platform and Stripe
+    // fees come out of the donation bucket. Beneficiary gets donation - platform - stripe.
+    const donorChargeCents = amountCents + tipCents;
+    const stripeFeeCents = Math.round(
+      donorChargeCents * stripeFeeRate + stripeFeeFixedCents,
+    );
+    const totalChargeCents = donorChargeCents;
+    const netBeneficiaryCents = Math.max(
+      0,
+      amountCents - platformFeeCents - stripeFeeCents,
+    );
+
+    this.logger.debug("Quoted donation fees", {
+      amountCents,
+      tipCents,
+      platformFeeCents,
+      stripeFeeCents,
+      totalChargeCents,
+      netBeneficiaryCents,
+      coversPlatformFee,
+    });
+
+    return {
+      amountCents,
+      tipCents,
+      platformFeeCents,
+      stripeFeeCents,
+      totalChargeCents,
+      netBeneficiaryCents,
+      currency: "USD",
+      coversPlatformFee,
+    };
+  }
+
   async listPayouts(
     memorialId: string,
     limit = 20,
@@ -390,20 +483,57 @@ export class FundraisingService {
       );
     }
 
+    const donorDisplay = dto.isAnonymous
+      ? "Anonymous"
+      : dto.donorDisplay || dto.donorName;
+
+    const tipCents = dto.tipCents ?? 0;
+    const coverPlatformFee = !!dto.coverPlatformFee;
+    const platformFeeRate = Number(
+      this.configService.get<string>("PLATFORM_FEE_RATE") ?? "0.04",
+    );
+    const stripeFeeRate = Number(
+      this.configService.get<string>("STRIPE_FEE_RATE") ?? "0.029",
+    );
+    const stripeFeeFixedCents = Number(
+      this.configService.get<string>("STRIPE_FEE_FIXED_CENTS") ?? "30",
+    );
+
+    const platformFeeCents = Math.round(dto.amountCents * platformFeeRate);
+    const donorBaseCents = coverPlatformFee
+      ? dto.amountCents + tipCents + platformFeeCents
+      : dto.amountCents + tipCents;
+    const estimatedStripeFeeCents = Math.round(
+      donorBaseCents * stripeFeeRate + stripeFeeFixedCents,
+    );
+
+    // Amount to charge the donor
+    const chargeAmountCents = coverPlatformFee
+      ? donorBaseCents + estimatedStripeFeeCents
+      : donorBaseCents;
+
     const paymentIntentRequest = {
       kind: "donation" as const,
-      amountCents: dto.amountCents,
+      amountCents: chargeAmountCents,
       currency: dto.currency || "USD",
       memorialId,
       fundraisingId: program.id,
       connectAccountId: program.connectAccountId || undefined,
       feePlanId: program.feePlanId || undefined,
+      applicationFeeAmount: platformFeeCents,
       metadata: {
         afterlifeMemorialId: memorialId,
         afterlifeFundraisingId: program.id,
-        donorDisplay: dto.donorDisplay,
+        donorDisplay,
+        donorEmail: dto.donorEmail,
         message: dto.message,
+        tipCents: tipCents.toString(),
+        coverPlatformFee: coverPlatformFee ? "true" : "false",
+        estimatedStripeFeeCents: estimatedStripeFeeCents.toString(),
       },
+      customerEmail: dto.donorEmail,
+      tipAmount: tipCents,
+      coverPlatformFee,
     };
 
     const response = await this.billingClient.createPaymentIntent(
@@ -716,11 +846,18 @@ export class FundraisingService {
       customerId: effectiveCustomerId,
     });
 
-    return this.billingClient.attachFinancialConnection({
+    const response = await this.billingClient.attachFinancialConnection({
       connectAccountId: program.connectAccountId,
       paymentMethodId,
       customerId: effectiveCustomerId,
     });
+
+    await this.upsertPayoutMethod(program, {
+      customerId: effectiveCustomerId,
+      paymentMethodId,
+    });
+
+    return response;
   }
 
   async deleteBeneficiary(memorialId: string, userId: string) {
@@ -817,6 +954,41 @@ export class FundraisingService {
       connectAccountId: program.connectAccountId,
       sessionId,
     });
+  }
+
+  async getPayoutBalance(memorialId: string, userId: string) {
+    const program = await this.prisma.fundraisingProgram.findUnique({
+      where: { memorialId },
+      include: { memorial: true },
+    });
+
+    if (!program) {
+      throw new NotFoundException("Fundraising program not found");
+    }
+
+    assertMemorialOwnerOrAdmin(userId, program.memorial);
+
+    if (!program.connectAccountId) {
+      throw new BadRequestException(
+        "Connect account must be created before retrieving balance",
+      );
+    }
+
+    const balance = await this.billingClient.getPayoutBalance(
+      program.connectAccountId,
+    );
+
+    return {
+      memorialId,
+      fundraisingId: program.id,
+      connectAccountId: program.connectAccountId,
+      currency: program.currency,
+      livemode: balance?.livemode ?? false,
+      available: balance?.available ?? {},
+      pending: balance?.pending ?? {},
+      instantAvailable: balance?.instantAvailable,
+      retrievedAt: balance?.retrievedAt,
+    };
   }
 
   async requestPayout(
@@ -925,5 +1097,83 @@ export class FundraisingService {
       destinationSummary: payoutMirror.destinationSummary,
       failureReason: null,
     };
+  }
+
+  private toPayoutMethodDto(
+    payoutMethod: PayoutMethod | null,
+  ): PayoutMethodDto | null {
+    if (!payoutMethod) {
+      return null;
+    }
+
+    return {
+      hasBankAccount: !!payoutMethod.hasBankAccount,
+      bankLast4: payoutMethod.bankLast4 || null,
+      bankName: payoutMethod.bankName || null,
+      bankCountry: payoutMethod.bankCountry || null,
+      bankCurrency: payoutMethod.bankCurrency || null,
+      institutionName: payoutMethod.institutionName || null,
+      payoutsEnabled: !!payoutMethod.payoutsEnabled,
+      accountStatus: payoutMethod.accountStatus || null,
+    };
+  }
+
+  private async upsertPayoutMethod(
+    program: FundraisingProgram,
+    context: { customerId?: string; paymentMethodId?: string },
+  ): Promise<void> {
+    if (!program.connectAccountId) {
+      return;
+    }
+
+    try {
+      const bankInfo = await this.billingClient.getPayoutBankInfo(
+        program.connectAccountId,
+      );
+
+      await this.prisma.payoutMethod.upsert({
+        where: { fundraisingId: program.id },
+        create: {
+          fundraisingId: program.id,
+          connectAccountId: program.connectAccountId,
+          customerId: context.customerId,
+          paymentMethodId: context.paymentMethodId,
+          hasBankAccount: bankInfo.hasBankAccount,
+          bankLast4: bankInfo.bankLast4,
+          bankName: bankInfo.bankName,
+          bankCountry: bankInfo.bankCountry,
+          bankCurrency: bankInfo.bankCurrency,
+          institutionName: bankInfo.institutionName,
+          payoutsEnabled: bankInfo.payoutsEnabled,
+          accountStatus: bankInfo.accountStatus,
+        },
+        update: {
+          connectAccountId: program.connectAccountId,
+          customerId: context.customerId ?? undefined,
+          paymentMethodId: context.paymentMethodId ?? undefined,
+          hasBankAccount: bankInfo.hasBankAccount,
+          bankLast4: bankInfo.bankLast4,
+          bankName: bankInfo.bankName,
+          bankCountry: bankInfo.bankCountry,
+          bankCurrency: bankInfo.bankCurrency,
+          institutionName: bankInfo.institutionName,
+          payoutsEnabled: bankInfo.payoutsEnabled,
+          accountStatus: bankInfo.accountStatus,
+        },
+      });
+
+      this.logger.debug("Stored payout method for fundraising program", {
+        memorialId: program.memorialId,
+        fundraisingId: program.id,
+        connectAccountId: program.connectAccountId,
+      });
+    } catch (error) {
+      this.logger.error("Failed to store payout method", {
+        memorialId: program.memorialId,
+        fundraisingId: program.id,
+        connectAccountId: program.connectAccountId,
+        error: (error as Error).message,
+      });
+    }
   }
 }

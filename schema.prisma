@@ -365,8 +365,9 @@ model FundraisingProgram {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  donations DonationMirror[] @relation(name: "ProgramDonations")
-  payouts   PayoutMirror[]   @relation(name: "ProgramPayouts")
+  donations    DonationMirror[] @relation(name: "ProgramDonations")
+  payouts      PayoutMirror[]   @relation(name: "ProgramPayouts")
+  payoutMethod PayoutMethod?    @relation(name: "ProgramPayoutMethod")
 
   @@index([status])
   @@index([beneficiaryOnboardingStatus])
@@ -406,6 +407,30 @@ model PayoutMirror {
 
   @@index([fundraisingId, status])
   @@index([initiatedAt])
+}
+
+model PayoutMethod {
+  id            String             @id @default(auto()) @map("_id") @db.ObjectId
+  fundraisingId String             @unique @db.ObjectId
+  fundraising   FundraisingProgram @relation(name: "ProgramPayoutMethod", fields: [fundraisingId], references: [id])
+
+  connectAccountId String?
+  customerId       String?
+  paymentMethodId  String?
+
+  hasBankAccount  Boolean?
+  bankLast4       String?
+  bankName        String?
+  bankCountry     String?
+  bankCurrency    String?
+  institutionName String?
+  payoutsEnabled  Boolean?
+  accountStatus   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([connectAccountId])
 }
 
 // ---------------------- Posts (Consolidated) ----------------
