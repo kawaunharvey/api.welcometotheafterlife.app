@@ -46,6 +46,17 @@ export class FundraisingController {
 
   constructor(private readonly fundraisingService: FundraisingService) {}
 
+  @Post("fees/quote")
+  async quoteFees(@Body() dto: QuoteFeesDto): Promise<FeeQuoteDto> {
+    this.logger.debug("Quoting fundraising fees", {
+      amountCents: dto.amountCents,
+      tipCents: dto.tipCents,
+      coverPlatformFee: dto.coverPlatformFee,
+    });
+
+    return this.fundraisingService.quoteFees(dto);
+  }
+
   @Post("programs")
   async createProgram(
     @Body() dto: CreateFundraisingProgramDto,
@@ -347,16 +358,5 @@ export class FundraisingController {
     });
 
     return this.fundraisingService.listPayouts(memorialId, parsedLimit, cursor);
-  }
-
-  @Post("fees/quote")
-  async quoteFees(@Body() dto: QuoteFeesDto): Promise<FeeQuoteDto> {
-    this.logger.debug("Quoting donation fees", {
-      amountCents: dto.amountCents,
-      tipCents: dto.tipCents,
-      coverPlatformFee: dto.coverPlatformFee,
-    });
-
-    return this.fundraisingService.quoteFees(dto);
   }
 }

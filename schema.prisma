@@ -119,6 +119,15 @@ enum FeedEventType {
   CLICK
 }
 
+enum FeedItemType {
+  MEMORIAL_UPDATE
+  FUNDRAISER_UPDATE
+  DONATION
+  OBITUARY_UPDATE
+  EVENT_NOTICE
+  AI_SUMMARY
+}
+
 // ---------------------- Users & Sessions --------------------
 
 model User {
@@ -473,6 +482,65 @@ type PostMetrics {
   watchTimeMs Int @default(0)
   likes       Int @default(0)
   flags       Int @default(0)
+}
+
+// ---------------------- Activity Feed ----------------------
+
+type FeedCta {
+  label         String?
+  webUrl        String?
+  iosAppUrl     String?
+  androidAppUrl String?
+}
+
+model FeedItem {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  type          FeedItemType
+  memorialId    String?      @db.ObjectId
+  fundraisingId String?      @db.ObjectId
+  obituaryId    String?      @db.ObjectId
+  eventId       String?      @db.ObjectId
+  actorUserId   String?      @db.ObjectId
+
+  title  String
+  body   String?
+  badges String[]
+  cta    FeedCta?
+
+  audienceTags    String[]
+  audienceUserIds String[]
+
+  lat     Float?
+  lng     Float?
+  geoHash String?
+  country String?
+
+  visibility Visibility?
+  sources    String[]
+  media      Json?
+  metadata   Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([createdAt])
+  @@index([memorialId, createdAt])
+  @@index([country, createdAt])
+  @@index([geoHash, createdAt])
+}
+
+model UserFeedCursor {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  userId String  @db.ObjectId
+  lane   String
+  cursor String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, lane])
 }
 
 // ---------------------- Consolidated Follows / Likes / Comments ----

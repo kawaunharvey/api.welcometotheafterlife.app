@@ -141,6 +141,7 @@ export interface CreatePayoutRequest {
   amountCents: number;
   currency: string;
   connectAccountId: string;
+  mode: "STANDARD" | "INSTANT";
   metadata: {
     afterlifeMemorialId: string;
     afterlifeFundraisingId: string;
@@ -152,6 +153,10 @@ export interface CreatePayoutResponse {
   payoutId: string;
   status: string;
   estimatedArrival?: string;
+  notBeforeAt?: string;
+  mode?: "STANDARD" | "INSTANT";
+  feeCents?: number;
+  netAmountCents?: number;
   destinationSummary: string;
 }
 

@@ -12,7 +12,7 @@ import {
   UpdateMemorialDto,
   MemorialResponseDto,
 } from "./dto/memorial.dto";
-import { Visibility, MemorialStatus } from "@prisma/client";
+import { Visibility, MemorialStatus, FeedItemType } from "@prisma/client";
 import { FeedsService } from "../feeds/feeds.service";
 import { AuditService } from "../audit/audit.service";
 import { ContentServiceClient } from "../../common";
@@ -72,6 +72,20 @@ export class MemorialsService {
         theme: dto.theme,
         status: MemorialStatus.ACTIVE,
       },
+    });
+
+    await this.feedsService.createActivityFeedItem({
+      type: FeedItemType.MEMORIAL_UPDATE,
+      memorialId: memorial.id,
+      actorUserId: userId,
+      title: `${memorial.displayName} memorial created`,
+      body: dto.bioSummary ?? undefined,
+      audienceTags: ["FOLLOWING", "MEMORIAL"],
+      audienceUserIds: [userId],
+      lat: dto.location?.lat ?? undefined,
+      lng: dto.location?.lng ?? undefined,
+      country: dto.location?.country ?? undefined,
+      visibility: memorial.visibility,
     });
 
     // Prime cache-backed feed for this memorial
@@ -293,6 +307,20 @@ export class MemorialsService {
         shortId: dto.shortId ?? memorial.shortId,
         visibility: dto.visibility ?? memorial.visibility,
       },
+    });
+
+    await this.feedsService.createActivityFeedItem({
+      type: FeedItemType.MEMORIAL_UPDATE,
+      memorialId: id,
+      actorUserId: currentUserId,
+      title: `${updated.displayName} memorial updated`,
+      body: dto.bioSummary ?? undefined,
+      audienceTags: ["FOLLOWING", "MEMORIAL"],
+      audienceUserIds: [memorial.ownerUserId],
+      lat: updated.location?.lat ?? undefined,
+      lng: updated.location?.lng ?? undefined,
+      country: updated.location?.country ?? undefined,
+      visibility: updated.visibility,
     });
 
     // Record audit log

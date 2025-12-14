@@ -372,6 +372,13 @@ CORS_ORIGIN="http://localhost:3000,https://app.thehereafter.tech"
 
 # ==================== External Services ====================
 
+# Email (Mailgun)
+MAILGUN_API_KEY="your-mailgun-api-key"
+MAILGUN_DOMAIN="mail.thehereafter.tech"
+NOTIFICATIONS_FROM_EMAIL="Welcome to the Afterlife <no-reply@thehereafter.tech>"
+MAILGUN_TEST_MODE="yes" # set to "no" in production
+FUNDRAISING_EMAIL_NOTIFICATIONS_ENABLED="false"
+
 # Redis (for caching)
 UPSTASH_REDIS_REST_URL="https://your-redis-endpoint.upstash.io"
 UPSTASH_REDIS_REST_TOKEN="your-redis-token"
@@ -383,6 +390,7 @@ CONTENT_SERVICE_API_KEY="your-content-service-api-key"
 # Billing Service Integration (for fundraising)
 BILLING_SERVICE_URL="http://localhost:3040"
 BILLING_SERVICE_WEBHOOK_SECRET="your-billing-webhook-secret"
+SHARE_BASE_URL="https://share.welcometotheafterlife.app"
 
 # Obituary Service Integration
 OBITUARY_SERVICE_URL="http://localhost:3020"

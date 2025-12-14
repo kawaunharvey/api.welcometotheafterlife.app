@@ -12,6 +12,8 @@ import { ObituaryCacheService } from "../../common";
 import { MemorialsService } from "./memorials.service";
 import { SessionAnswerDto } from "./dto/obituary.dto";
 import { PrismaService } from "../../prisma/prisma.service";
+import { FeedsService } from "../feeds/feeds.service";
+import { FeedItemType } from "@prisma/client";
 
 @Injectable()
 export class MemorialObituaryService {
@@ -22,6 +24,7 @@ export class MemorialObituaryService {
     private readonly obituaryCache: ObituaryCacheService,
     private readonly memorialsService: MemorialsService,
     private readonly prisma: PrismaService,
+    private readonly feedsService: FeedsService,
   ) {}
 
   // ==================== Questionnaire Management ====================
@@ -754,6 +757,19 @@ export class MemorialObituaryService {
 
     // Update memorial pointer to published obituary
     await this.memorialsService.updateObituaryId(memorialId, published.id);
+
+    // Emit feed item for obituary publication
+    await this.feedsService.createActivityFeedItem({
+      type: FeedItemType.OBITUARY_UPDATE,
+      memorialId,
+      obituaryId: published.id,
+      title: "Obituary published",
+      body: draft.content?.slice(0, 240) ?? undefined,
+      audienceTags: ["FOLLOWING", "MEMORIAL"],
+      audienceUserIds: [memorial.ownerUserId],
+      visibility: memorial.visibility,
+      sources: [draftId],
+    });
 
     return published;
   }

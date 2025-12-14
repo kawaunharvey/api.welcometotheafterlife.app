@@ -48,6 +48,58 @@ export class FeedsController {
     return { entries };
   }
 
+  @Get("community")
+  @ApiOperation({ summary: "Get community activity feed" })
+  @ApiOkResponse({ description: "Activity feed entries for community lane" })
+  async getCommunityFeed(
+    @Query("country") country?: string,
+    @Query("lat") lat?: number,
+    @Query("lng") lng?: number,
+    @Query("limit") limit?: number,
+    @Query("cursor") cursor?: string,
+    @CurrentUser() user?: CurrentUserContext,
+  ) {
+    const parsedLimit = limit ? Number.parseInt(String(limit), 10) : undefined;
+    const parsedLat =
+      lat !== undefined && lat !== null
+        ? Number.parseFloat(String(lat))
+        : undefined;
+    const parsedLng =
+      lng !== undefined && lng !== null
+        ? Number.parseFloat(String(lng))
+        : undefined;
+
+    return this.feedsService.getCommunityActivityFeedEntries({
+      userId: user?.userId,
+      country,
+      lat: parsedLat,
+      lng: parsedLng,
+      limit: parsedLimit,
+      cursor,
+    });
+  }
+
+  @Get("personal")
+  @ApiOperation({ summary: "Get personal activity feed" })
+  @ApiOkResponse({ description: "Activity feed entries for personal lane" })
+  async getPersonalFeed(
+    @Query("limit") limit?: number,
+    @Query("cursor") cursor?: string,
+    @CurrentUser() user?: CurrentUserContext,
+  ) {
+    if (!user?.userId) {
+      return { items: [], nextCursor: null };
+    }
+
+    const parsedLimit = limit ? Number.parseInt(String(limit), 10) : undefined;
+
+    return this.feedsService.getPersonalActivityFeedEntries({
+      userId: user.userId,
+      limit: parsedLimit,
+      cursor,
+    });
+  }
+
   @Get("global")
   @ApiOperation({ summary: "Get global feed of high-engagement videos" })
   @ApiOkResponse({ description: "Global feed entries with hydrated posts" })

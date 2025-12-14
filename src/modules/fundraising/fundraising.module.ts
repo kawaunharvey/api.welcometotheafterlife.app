@@ -7,11 +7,15 @@ import { BillingWebhookService } from "./billing-webhook.service";
 import { BillingClient } from "../../common/http-client/billing-service.client";
 import { PrismaModule } from "../../prisma/prisma.module";
 import { AuditModule } from "../audit/audit.module";
+import { NotificationsModule } from "../notifications/notifications.module";
+import { FeedsModule } from "../feeds/feeds.module";
 
 @Module({
   imports: [
     PrismaModule,
     AuditModule,
+    NotificationsModule,
+    FeedsModule,
     HttpModule.register({
       timeout: 10000,
       maxRedirects: 5,

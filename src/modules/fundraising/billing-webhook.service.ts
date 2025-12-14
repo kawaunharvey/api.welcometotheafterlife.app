@@ -4,6 +4,9 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { AuditService } from "../audit/audit.service";
 import { DonationStatus } from "@prisma/client";
 import { sumCents } from "../../common/utils/money";
+import { NotificationService } from "../notifications/notification.service";
+import { FeedsService } from "../feeds/feeds.service";
+import { FeedItemType } from "@prisma/client";
 
 interface WebhookEventPayload {
   type: string;
@@ -54,6 +57,8 @@ export class BillingWebhookService {
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
     private readonly configService: ConfigService,
+    private readonly notificationService: NotificationService,
+    private readonly feedsService: FeedsService,
   ) {
     this.webhookSecret =
       this.configService.get("BILLING_WEBHOOK_SECRET") || "whsec_xxx";
@@ -142,6 +147,48 @@ export class BillingWebhookService {
       },
     });
 
+    if (donationStatus === DonationStatus.SUCCEEDED) {
+      const fundraising = await this.prisma.fundraisingProgram.findUnique({
+        where: { id: data.fundraisingId },
+        select: {
+          memorialId: true,
+          memorial: {
+            select: {
+              displayName: true,
+              ownerUserId: true,
+              visibility: true,
+              location: true,
+            },
+          },
+        },
+      });
+
+      if (fundraising?.memorialId) {
+        const donorName = data.metadata?.donorDisplay || "Someone";
+        await this.feedsService.createActivityFeedItem({
+          type: FeedItemType.DONATION,
+          fundraisingId: data.fundraisingId,
+          memorialId: fundraising.memorialId,
+          title: `${donorName} donated`,
+          body: data.metadata?.message,
+          badges: ["DONATION"],
+          audienceTags: ["FOLLOWING", "FUNDRAISING"],
+          audienceUserIds: fundraising.memorial?.ownerUserId
+            ? [fundraising.memorial.ownerUserId]
+            : [],
+          lat: fundraising.memorial?.location?.lat ?? undefined,
+          lng: fundraising.memorial?.location?.lng ?? undefined,
+          country: fundraising.memorial?.location?.country ?? undefined,
+          visibility: fundraising.memorial?.visibility,
+          sources: [data.paymentId],
+          metadata: {
+            amountCents: data.amountCents,
+            currency: data.currency,
+          },
+        });
+      }
+    }
+
     // Recompute fundraising program totals
     await this.recomputeFundraisingTotals(data.fundraisingId);
 
@@ -152,6 +199,15 @@ export class BillingWebhookService {
       action: "DONATION_MIRRORED",
       payload: { status: donationStatus, amountCents: data.amountCents },
     });
+
+    try {
+      await this.notificationService.sendDonationSucceeded(data);
+    } catch (error) {
+      this.logger.error("Failed to send donation notification", {
+        error,
+        paymentId: data.paymentId,
+      });
+    }
 
     this.logger.debug("Payment event processed successfully", {
       paymentId: data.paymentId,
@@ -202,6 +258,15 @@ export class BillingWebhookService {
       action: "PAYOUT_UPDATED",
       payload: { status: data.status, amountCents: data.amountCents },
     });
+
+    try {
+      await this.notificationService.sendPayoutUpdate(event.type, data);
+    } catch (error) {
+      this.logger.error("Failed to send payout notification", {
+        error,
+        payoutId: data.payoutId,
+      });
+    }
 
     this.logger.debug("Payout event processed successfully", {
       payoutId: data.payoutId,

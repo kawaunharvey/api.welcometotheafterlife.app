@@ -2,6 +2,8 @@ import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import {
   FollowTargetType,
+  FeedItem,
+  FeedItemType,
   LikeTargetType,
   Post,
   PostStatus,
@@ -64,17 +66,209 @@ type PostWithMemorial = Prisma.PostGetPayload<{
   };
 }>;
 
+export interface FeedItemCtaDto {
+  label?: string | null;
+  webUrl?: string | null;
+  iosAppUrl?: string | null;
+  androidAppUrl?: string | null;
+}
+
+export interface ActivityFeedItemDto {
+  id: string;
+  type: FeedItemType;
+  memorialId?: string | null;
+  fundraisingId?: string | null;
+  obituaryId?: string | null;
+  eventId?: string | null;
+  actorUserId?: string | null;
+  title: string;
+  body?: string | null;
+  badges: string[];
+  audienceTags: string[];
+  audienceUserIds: string[];
+  lat?: number | null;
+  lng?: number | null;
+  geoHash?: string | null;
+  country?: string | null;
+  visibility?: Visibility | null;
+  sources: string[];
+  media?: Prisma.JsonValue;
+  metadata?: Prisma.JsonValue;
+  cta?: FeedItemCtaDto;
+  createdAt: Date;
+}
+
+export interface CreateFeedItemInput {
+  type: FeedItemType;
+  memorialId?: string | null;
+  fundraisingId?: string | null;
+  obituaryId?: string | null;
+  eventId?: string | null;
+  actorUserId?: string | null;
+  title: string;
+  body?: string | null;
+  badges?: string[];
+  audienceTags?: string[];
+  audienceUserIds?: string[];
+  lat?: number | null;
+  lng?: number | null;
+  country?: string | null;
+  visibility?: Visibility | null;
+  sources?: string[];
+  media?: Prisma.JsonValue;
+  metadata?: Prisma.JsonValue;
+  cta?: FeedItemCtaDto;
+}
+
 @Injectable()
 export class FeedsService {
   private readonly logger = new Logger("FeedsService");
   private readonly maxFeedSize = 200;
   private readonly cacheTtlSeconds = 60 * 15; // 15 minutes
   private readonly highEngagementThreshold = 25; // heuristic to keep global feed interesting
+  private readonly geoHashPrecision = 2; // coarse bucket for proximity grouping
 
   constructor(
     private prisma: PrismaService,
     private redis: RedisService,
   ) {}
+
+  /**
+   * Create a structured activity feed item for memorial/fundraising/obituary events.
+   */
+  async createActivityFeedItem(
+    input: CreateFeedItemInput,
+  ): Promise<ActivityFeedItemDto> {
+    const geoHash =
+      input.lat !== undefined &&
+      input.lat !== null &&
+      input.lng !== undefined &&
+      input.lng !== null
+        ? this.computeGeoHash(input.lat, input.lng)
+        : undefined;
+
+    const item = await this.prisma.feedItem.create({
+      data: {
+        type: input.type,
+        memorialId: input.memorialId ?? undefined,
+        fundraisingId: input.fundraisingId ?? undefined,
+        obituaryId: input.obituaryId ?? undefined,
+        eventId: input.eventId ?? undefined,
+        actorUserId: input.actorUserId ?? undefined,
+        title: input.title,
+        body: input.body ?? undefined,
+        badges: input.badges ?? [],
+        audienceTags: input.audienceTags ?? [],
+        audienceUserIds: input.audienceUserIds ?? [],
+        lat: input.lat ?? undefined,
+        lng: input.lng ?? undefined,
+        geoHash: geoHash ?? undefined,
+        country: input.country ?? undefined,
+        visibility: input.visibility ?? undefined,
+        sources: input.sources ?? [],
+        media: input.media ?? undefined,
+        metadata: input.metadata ?? undefined,
+        cta: input.cta
+          ? {
+              label: input.cta.label ?? undefined,
+              webUrl: input.cta.webUrl ?? undefined,
+              iosAppUrl: input.cta.iosAppUrl ?? undefined,
+              androidAppUrl: input.cta.androidAppUrl ?? undefined,
+            }
+          : undefined,
+      },
+    });
+
+    return this.buildActivityFeedItemDto(item);
+  }
+
+  /**
+   * Community lane: proximity + country + followed memorials.
+   */
+  async getCommunityActivityFeedEntries({
+    userId,
+    country,
+    lat,
+    lng,
+    limit = 20,
+    cursor,
+  }: {
+    userId?: string;
+    country?: string;
+    lat?: number;
+    lng?: number;
+    limit?: number;
+    cursor?: string;
+  }) {
+    const safeLimit = Math.max(1, Math.min(limit, this.maxFeedSize));
+    const normalizedCountry = country?.trim()?.toUpperCase();
+    const geoHash =
+      lat !== undefined && lat !== null && lng !== undefined && lng !== null
+        ? this.computeGeoHash(lat, lng)
+        : undefined;
+
+    const filters: Prisma.FeedItemWhereInput[] = [];
+    if (normalizedCountry) {
+      filters.push({ country: normalizedCountry });
+    }
+    if (geoHash) {
+      filters.push({ geoHash: { startsWith: geoHash } });
+    }
+
+    const followedMemorialIds = userId
+      ? await this.getFollowedMemorialIds(userId)
+      : [];
+    if (followedMemorialIds.length) {
+      filters.push({ memorialId: { in: followedMemorialIds } });
+    }
+
+    const where: Prisma.FeedItemWhereInput =
+      filters.length > 0 ? { OR: filters } : {};
+
+    const items = await this.prisma.feedItem.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      take: safeLimit + 1,
+    });
+
+    return this.paginateActivityItems(items, safeLimit);
+  }
+
+  /**
+   * Personal lane: items where the user is actor, target, or follows the memorial.
+   */
+  async getPersonalActivityFeedEntries({
+    userId,
+    limit = 20,
+    cursor,
+  }: {
+    userId: string;
+    limit?: number;
+    cursor?: string;
+  }) {
+    const safeLimit = Math.max(1, Math.min(limit, this.maxFeedSize));
+    const filters: Prisma.FeedItemWhereInput[] = [];
+
+    filters.push({ audienceUserIds: { has: userId } });
+    filters.push({ actorUserId: userId });
+
+    const followedMemorialIds = await this.getFollowedMemorialIds(userId);
+    if (followedMemorialIds.length) {
+      filters.push({ memorialId: { in: followedMemorialIds } });
+    }
+
+    const where: Prisma.FeedItemWhereInput = { OR: filters };
+
+    const items = await this.prisma.feedItem.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      take: safeLimit + 1,
+    });
+
+    return this.paginateActivityItems(items, safeLimit);
+  }
 
   /**
    * Get paginated global feed built from high-engagement videos.
@@ -629,5 +823,64 @@ export class FeedsService {
 
   private generateEntryId(postId: string, scope: string) {
     return crypto.createHash("sha1").update(`${scope}:${postId}`).digest("hex");
+  }
+
+  private paginateActivityItems(items: FeedItem[], limit: number) {
+    const hasNext = items.length > limit;
+    const slice = hasNext ? items.slice(0, limit) : items;
+    return {
+      items: slice.map((item) => this.buildActivityFeedItemDto(item)),
+      nextCursor: hasNext ? slice[slice.length - 1].id : null,
+    };
+  }
+
+  private buildActivityFeedItemDto(item: FeedItem): ActivityFeedItemDto {
+    return {
+      id: item.id,
+      type: item.type,
+      memorialId: item.memorialId,
+      fundraisingId: item.fundraisingId,
+      obituaryId: item.obituaryId,
+      eventId: item.eventId,
+      actorUserId: item.actorUserId,
+      title: item.title,
+      body: item.body,
+      badges: item.badges ?? [],
+      audienceTags: item.audienceTags ?? [],
+      audienceUserIds: item.audienceUserIds ?? [],
+      lat: item.lat,
+      lng: item.lng,
+      geoHash: item.geoHash,
+      country: item.country,
+      visibility: item.visibility,
+      sources: item.sources ?? [],
+      media: item.media,
+      metadata: item.metadata,
+      cta: item.cta
+        ? {
+            label: item.cta.label,
+            webUrl: item.cta.webUrl,
+            iosAppUrl: item.cta.iosAppUrl,
+            androidAppUrl: item.cta.androidAppUrl,
+          }
+        : undefined,
+      createdAt: item.createdAt,
+    };
+  }
+
+  private computeGeoHash(lat: number, lng: number) {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return undefined;
+    }
+    return `${lat.toFixed(this.geoHashPrecision)},${lng.toFixed(this.geoHashPrecision)}`;
+  }
+
+  private async getFollowedMemorialIds(userId: string): Promise<string[]> {
+    const follows = await this.prisma.follow.findMany({
+      where: { userId, targetType: FollowTargetType.MEMORIAL },
+      select: { targetId: true },
+      take: 500,
+    });
+    return follows.map((f) => f.targetId);
   }
 }

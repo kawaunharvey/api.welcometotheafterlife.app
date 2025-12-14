@@ -230,12 +230,26 @@ export class RequestPayoutDto {
 
   @IsOptional()
   @IsString()
-  @IsIn(["USD"])
+  @IsIn(["USD", "usd"])
   currency?: string = "USD";
 
   @IsOptional()
   @IsString()
   note?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(["STANDARD", "INSTANT"])
+  mode?: "STANDARD" | "INSTANT";
+
+  // Client may send, but we will ignore and use the program's stored values
+  @IsOptional()
+  @IsString()
+  connectAccountId?: string;
+
+  @IsOptional()
+  @IsString()
+  fundraisingId?: string;
 }
 
 export interface FundraisingProgramSummaryDto {
