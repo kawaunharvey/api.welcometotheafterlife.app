@@ -145,11 +145,12 @@ model User {
   updatedAt DateTime @updatedAt
 
   // relations
-  sessions Session[] @relation(name: "UserSessions")
-  follows  Follow[]  @relation(name: "UserFollows")
-  likes    Like[]    @relation(name: "UserLikes")
-  comments Comment[] @relation(name: "UserComments")
-  posts    Post[]    @relation(name: "UserPosts")
+  sessions              Session[]              @relation(name: "UserSessions")
+  follows               Follow[]               @relation(name: "UserFollows")
+  likes                 Like[]                 @relation(name: "UserLikes")
+  comments              Comment[]              @relation(name: "UserComments")
+  posts                 Post[]                 @relation(name: "UserPosts")
+  memorialRelationships MemorialRelationship[] @relation(name: "MemorialRelationshipUser")
 }
 
 model Session {
@@ -170,36 +171,37 @@ model Session {
 // ---------------------- Memorials ---------------------------
 
 model Memorial {
-  id                       String              @id @default(auto()) @map("_id") @db.ObjectId
-  slug                     String              @unique
-  shortId                  String?             @unique
+  id                       String                 @id @default(auto()) @map("_id") @db.ObjectId
+  slug                     String                 @unique
+  shortId                  String?                @unique
   ownerUserId              String
   displayName              String
   coverAssetUrl            String?
-  coverAssetId             String?             @db.ObjectId
+  coverAssetId             String?                @db.ObjectId
   salutation               String?
   yearOfBirth              Int?
   yearOfPassing            Int?
-  theme                    String?             @default("default")
+  theme                    String?                @default("default")
   location                 Location?
   bioSummary               String?
   tags                     String[]
-  visibility               Visibility          @default(PUBLIC)
-  status                   MemorialStatus      @default(ACTIVE)
-  verificationStatus       VerificationStatus  @default(UNVERIFIED)
+  visibility               Visibility             @default(PUBLIC)
+  status                   MemorialStatus         @default(ACTIVE)
+  verificationStatus       VerificationStatus     @default(UNVERIFIED)
   iosAppUrl                String?
   androidAppUrl            String?
   shareUrl                 String?
   shortUrl                 String?
   obituaryId               String? // latest obituary draft ID
   obituaryServiceSessionId String? // questionnaire session ID
-  createdAt                DateTime            @default(now())
-  updatedAt                DateTime            @updatedAt
+  createdAt                DateTime               @default(now())
+  updatedAt                DateTime               @updatedAt
   archivedAt               DateTime?
-  verificationCase         VerificationCase?   @relation(name: "MemorialVerification")
-  fundraising              FundraisingProgram? @relation(name: "MemorialFundraising")
-  posts                    Post[]              @relation(name: "PostMemorialPrimary")
-  events                   Event[]             @relation(name: "MemorialEvents")
+  verificationCase         VerificationCase?      @relation(name: "MemorialVerification")
+  fundraising              FundraisingProgram?    @relation(name: "MemorialFundraising")
+  posts                    Post[]                 @relation(name: "PostMemorialPrimary")
+  events                   Event[]                @relation(name: "MemorialEvents")
+  memorialRelationships    MemorialRelationship[] @relation(name: "MemorialRelationshipMemorial")
 
   @@index([displayName])
   @@index([verificationStatus, status])
@@ -544,6 +546,25 @@ model UserFeedCursor {
 }
 
 // ---------------------- Consolidated Follows / Likes / Comments ----
+
+model MemorialRelationship {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  memorialId String   @db.ObjectId
+  memorial   Memorial @relation(name: "MemorialRelationshipMemorial", fields: [memorialId], references: [id])
+
+  userId String @db.ObjectId
+  user   User   @relation(name: "MemorialRelationshipUser", fields: [userId], references: [id])
+
+  relationship String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([memorialId, userId])
+  @@index([memorialId])
+  @@index([userId])
+}
 
 model Follow {
   id String @id @default(auto()) @map("_id") @db.ObjectId

@@ -1,5 +1,5 @@
-import { ApiProperty } from "@nestjs/swagger";
-import { IsEnum, IsString } from "class-validator";
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { IsEnum, IsOptional, IsString, MaxLength } from "class-validator";
 import { FollowTargetType } from "@prisma/client";
 
 export class CreateFollowDto {
@@ -13,6 +13,14 @@ export class CreateFollowDto {
   @ApiProperty({ description: "ID of the target (memorial or user)" })
   @IsString()
   targetId: string;
+
+  @ApiPropertyOptional({
+    description: "Relationship to the memorial (MEMORIAL only)",
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  relationship?: string;
 }
 
 export class FollowResponseDto {
@@ -30,4 +38,7 @@ export class FollowResponseDto {
 
   @ApiProperty()
   createdAt: Date;
+
+  @ApiPropertyOptional({ nullable: true })
+  relationship?: string | null;
 }

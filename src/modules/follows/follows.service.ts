@@ -15,6 +15,9 @@ export class FollowsService {
     userId: string,
     dto: CreateFollowDto,
   ): Promise<FollowResponseDto> {
+    const isMemorialTarget = dto.targetType === FollowTargetType.MEMORIAL;
+    const relationshipInput = dto.relationship?.trim();
+
     // Check if already following
     const existing = await this.prisma.follow.findUnique({
       where: {
@@ -27,12 +30,21 @@ export class FollowsService {
     });
 
     if (existing) {
+      // If relationship provided while already following a memorial, upsert it
+      const relationship = isMemorialTarget
+        ? await this.upsertMemorialRelationship(
+            userId,
+            dto.targetId,
+            relationshipInput,
+          )
+        : null;
+
       // Return existing follow (idempotent)
-      return this.mapToResponse(existing);
+      return this.mapToResponse(existing, relationship);
     }
 
     // Validate target exists (simplified check)
-    if (dto.targetType === "MEMORIAL") {
+    if (isMemorialTarget) {
       const memorial = await this.prisma.memorial.findUnique({
         where: { id: dto.targetId },
       });
@@ -49,7 +61,15 @@ export class FollowsService {
       },
     });
 
-    return this.mapToResponse(follow);
+    const relationship = isMemorialTarget
+      ? await this.upsertMemorialRelationship(
+          userId,
+          dto.targetId,
+          relationshipInput,
+        )
+      : null;
+
+    return this.mapToResponse(follow, relationship);
   }
 
   /**
@@ -77,6 +97,12 @@ export class FollowsService {
     await this.prisma.follow.delete({
       where: { id: follow.id },
     });
+
+    if (targetType === FollowTargetType.MEMORIAL) {
+      await this.prisma.memorialRelationship.deleteMany({
+        where: { memorialId: targetId, userId },
+      });
+    }
   }
 
   /**
@@ -113,19 +139,52 @@ export class FollowsService {
   /**
    * Map Prisma Follow to response DTO.
    */
-  private mapToResponse(follow: {
-    id: string;
-    userId: string;
-    targetType: FollowTargetType;
-    targetId: string;
-    createdAt: Date;
-  }): FollowResponseDto {
+  private mapToResponse(
+    follow: {
+      id: string;
+      userId: string;
+      targetType: FollowTargetType;
+      targetId: string;
+      createdAt: Date;
+    },
+    relationship?: string | null,
+  ): FollowResponseDto {
     return {
       id: follow.id,
       userId: follow.userId,
       targetType: follow.targetType,
       targetId: follow.targetId,
       createdAt: follow.createdAt,
+      relationship: relationship ?? null,
     };
+  }
+
+  /**
+   * Upsert the memorial relationship if provided, otherwise return existing.
+   */
+  private async upsertMemorialRelationship(
+    userId: string,
+    memorialId: string,
+    relationship?: string | null,
+  ): Promise<string | null> {
+    if (relationship) {
+      const saved = await this.prisma.memorialRelationship.upsert({
+        where: {
+          memorialId_userId: { memorialId, userId },
+        },
+        update: { relationship },
+        create: { memorialId, userId, relationship },
+      });
+
+      return saved.relationship;
+    }
+
+    const existing = await this.prisma.memorialRelationship.findUnique({
+      where: {
+        memorialId_userId: { memorialId, userId },
+      },
+    });
+
+    return existing?.relationship ?? null;
   }
 }
