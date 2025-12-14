@@ -1,7 +1,7 @@
 import { Injectable, Logger, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { CreateFollowDto, FollowResponseDto } from "./dto/follow.dto";
-import { FollowTargetType } from "@prisma/client";
+import { FollowTargetType, MemorialRelationshipKind } from "@prisma/client";
 
 @Injectable()
 export class FollowsService {
@@ -16,7 +16,10 @@ export class FollowsService {
     dto: CreateFollowDto,
   ): Promise<FollowResponseDto> {
     const isMemorialTarget = dto.targetType === FollowTargetType.MEMORIAL;
-    const relationshipInput = dto.relationship?.trim();
+    const relationshipInput = dto.relationship ?? null;
+    const qualifierInput = dto.qualifier
+      ?.map((item) => item.trim())
+      .filter((item) => item.length > 0);
 
     // Check if already following
     const existing = await this.prisma.follow.findUnique({
@@ -36,11 +39,16 @@ export class FollowsService {
             userId,
             dto.targetId,
             relationshipInput,
+            qualifierInput,
           )
         : null;
 
       // Return existing follow (idempotent)
-      return this.mapToResponse(existing, relationship);
+      return this.mapToResponse(
+        existing,
+        relationship?.relationship,
+        relationship?.qualifier,
+      );
     }
 
     // Validate target exists (simplified check)
@@ -66,10 +74,15 @@ export class FollowsService {
           userId,
           dto.targetId,
           relationshipInput,
+          qualifierInput,
         )
       : null;
 
-    return this.mapToResponse(follow, relationship);
+    return this.mapToResponse(
+      follow,
+      relationship?.relationship,
+      relationship?.qualifier,
+    );
   }
 
   /**
@@ -147,7 +160,8 @@ export class FollowsService {
       targetId: string;
       createdAt: Date;
     },
-    relationship?: string | null,
+    relationship?: MemorialRelationshipKind | null,
+    qualifier?: string[] | null,
   ): FollowResponseDto {
     return {
       id: follow.id,
@@ -156,6 +170,7 @@ export class FollowsService {
       targetId: follow.targetId,
       createdAt: follow.createdAt,
       relationship: relationship ?? null,
+      qualifier: qualifier ?? [],
     };
   }
 
@@ -165,19 +180,15 @@ export class FollowsService {
   private async upsertMemorialRelationship(
     userId: string,
     memorialId: string,
-    relationship?: string | null,
-  ): Promise<string | null> {
-    if (relationship) {
-      const saved = await this.prisma.memorialRelationship.upsert({
-        where: {
-          memorialId_userId: { memorialId, userId },
-        },
-        update: { relationship },
-        create: { memorialId, userId, relationship },
-      });
-
-      return saved.relationship;
-    }
+    relationship?: MemorialRelationshipKind | null,
+    qualifier?: string[] | null,
+  ): Promise<{
+    relationship: MemorialRelationshipKind;
+    qualifier: string[];
+  } | null> {
+    const cleanedQualifier = qualifier
+      ?.map((item) => item.trim())
+      .filter((item) => item.length > 0);
 
     const existing = await this.prisma.memorialRelationship.findUnique({
       where: {
@@ -185,6 +196,44 @@ export class FollowsService {
       },
     });
 
-    return existing?.relationship ?? null;
+    const relationshipToUse = relationship ?? existing?.relationship ?? null;
+
+    // Cannot create a new relationship record without a relationship kind
+    if (!relationshipToUse && cleanedQualifier?.length && !existing) {
+      return null;
+    }
+
+    // If there's nothing to change or create, return existing snapshot (or null).
+    if (!relationshipToUse && !cleanedQualifier?.length) {
+      if (!existing) {
+        return null;
+      }
+
+      return {
+        relationship: existing.relationship,
+        qualifier: existing.qualifier ?? [],
+      };
+    }
+
+    const saved = await this.prisma.memorialRelationship.upsert({
+      where: {
+        memorialId_userId: { memorialId, userId },
+      },
+      update: {
+        ...(relationshipToUse ? { relationship: relationshipToUse } : {}),
+        qualifier: cleanedQualifier ?? existing?.qualifier ?? [],
+      },
+      create: {
+        memorialId,
+        userId,
+        relationship: relationshipToUse as MemorialRelationshipKind,
+        qualifier: cleanedQualifier ?? [],
+      },
+    });
+
+    return {
+      relationship: saved.relationship,
+      qualifier: saved.qualifier ?? [],
+    };
   }
 }

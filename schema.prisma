@@ -545,6 +545,17 @@ model UserFeedCursor {
   @@unique([userId, lane])
 }
 
+enum MemorialRelationshipKind {
+  IMMEDIATE_FAMILY // spouse, parent, child, sibling
+  EXTENDED_FAMILY // aunt, uncle, cousin, in-law
+  PARTNER // non-married partner
+  FRIEND
+  COLLEAGUE // coworker, professional connection
+  COMMUNITY // church member, neighbor, org member
+  CAREGIVER // nurse, aide, hospice, guardian
+  OTHER
+}
+
 // ---------------------- Consolidated Follows / Likes / Comments ----
 
 model MemorialRelationship {
@@ -556,7 +567,8 @@ model MemorialRelationship {
   userId String @db.ObjectId
   user   User   @relation(name: "MemorialRelationshipUser", fields: [userId], references: [id])
 
-  relationship String
+  relationship MemorialRelationshipKind
+  qualifier    String[] // e.g. "sister", "mother", etc.
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
