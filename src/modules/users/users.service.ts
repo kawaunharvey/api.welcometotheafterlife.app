@@ -25,6 +25,11 @@ export class UsersService {
     private readonly cacheService: CacheService,
   ) {}
 
+  async isHandleAvailable(handle: string): Promise<{ available: boolean }> {
+    const existing = await this.prisma.user.findUnique({ where: { handle } });
+    return { available: !existing };
+  }
+
   async getUserProfile(userId: string): Promise<UserMeResponseDto> {
     const cacheKey = CacheService.generateKey("user_profile", userId);
 

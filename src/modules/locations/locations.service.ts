@@ -102,4 +102,60 @@ export class LocationsService {
 
     return parts;
   }
+
+  async reverseGeocode(lat: number, lng: number) {
+    if (lat === undefined || lng === undefined) {
+      throw new BadRequestException("Latitude and longitude are required");
+    }
+
+    if (!this.apiKey) {
+      throw new InternalServerErrorException(
+        "Google Maps API key is not configured",
+      );
+    }
+
+    try {
+      const response = await this.mapsClient.reverseGeocode({
+        params: {
+          latlng: { lat, lng },
+          key: this.apiKey,
+        },
+        timeout: this.timeoutMs,
+      });
+
+      const { data } = response;
+
+      if (data.status && !["OK", "ZERO_RESULTS"].includes(data.status)) {
+        this.logger.warn(
+          `Google Maps reverseGeocode responded with status ${data.status}: ${data.error_message || "no message"}`,
+        );
+        throw new InternalServerErrorException(
+          "Google Maps reverse geocode failed",
+        );
+      }
+
+      const first = data.results?.[0];
+      if (!first) {
+        return null;
+      }
+
+      return {
+        placeId: first.place_id as string,
+        name: first.formatted_address as string,
+        formattedAddress: first.formatted_address,
+        location: first.geometry?.location,
+        types: first.types,
+        parts: this.getComponentParts(first.formatted_address!) ?? {},
+      };
+    } catch (error) {
+      const axiosError = error as AxiosError;
+      this.logger.error(
+        `Google Maps reverseGeocode failed: ${axiosError.message}`,
+        axiosError.stack,
+      );
+      throw new InternalServerErrorException(
+        "Unable to reverse geocode location",
+      );
+    }
+  }
 }

@@ -12,6 +12,7 @@ import {
   LocationSearchQueryDto,
   LocationSearchResultDto,
 } from "./dto/location-search.dto";
+import { ReverseGeocodeQueryDto } from "./dto/location-reverse.dto";
 import { LocationsService } from "./locations.service";
 
 @ApiTags("locations")
@@ -42,5 +43,16 @@ export class LocationsController {
       query.limit ?? 5,
     );
     return { results };
+  }
+
+  @Get("reverse")
+  @ApiOperation({ summary: "Reverse geocode coordinates to address parts" })
+  @ApiOkResponse({ description: "Nearest address for the coordinates" })
+  async reverse(@Query() query: ReverseGeocodeQueryDto) {
+    const result = await this.locationsService.reverseGeocode(
+      query.lat,
+      query.lng,
+    );
+    return { result };
   }
 }

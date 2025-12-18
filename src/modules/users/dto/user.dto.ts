@@ -11,6 +11,17 @@ import {
 } from "class-validator";
 import { Type } from "class-transformer";
 
+export class HandleAvailabilityQueryDto {
+  @ApiProperty({
+    description: "Desired handle to check",
+    minLength: 3,
+    maxLength: 30,
+  })
+  @IsString()
+  @Length(3, 30)
+  handle: string;
+}
+
 export class UpdateUserDto {
   @ApiProperty({ required: false, description: "User's display name" })
   @IsOptional()
