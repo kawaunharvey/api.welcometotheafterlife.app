@@ -161,6 +161,7 @@ export class FundraisingService {
     // Validate memorial exists and user has permission
     const memorial = await this.prisma.memorial.findUnique({
       where: { id: dto.memorialId },
+      include: { location: true },
     });
 
     if (!memorial) {
@@ -206,8 +207,14 @@ export class FundraisingService {
       memorialId: dto.memorialId,
       fundraisingId: program.id,
       actorUserId: userId,
-      title: "Fundraiser created",
-      body: dto.purpose,
+      templatePayload: {
+        actor: { id: userId },
+        fundraiser: {
+          id: program.id,
+          displayName: dto.purpose ?? "Fundraiser",
+        },
+        summary: dto.purpose ?? "Fundraiser created",
+      },
       audienceTags: ["FOLLOWING", "FUNDRAISING"],
       audienceUserIds: [memorial.ownerUserId],
       lat: memorial.location?.lat ?? undefined,
@@ -265,7 +272,7 @@ export class FundraisingService {
   ): Promise<FundraisingProgram> {
     const program = await this.prisma.fundraisingProgram.findUnique({
       where: { memorialId },
-      include: { memorial: true },
+      include: { memorial: { include: { location: true } } },
     });
 
     if (!program) {
@@ -296,8 +303,14 @@ export class FundraisingService {
       memorialId,
       fundraisingId: program.id,
       actorUserId: userId,
-      title: "Fundraiser updated",
-      body: dto.purpose ?? program.purpose,
+      templatePayload: {
+        actor: { id: userId },
+        fundraiser: {
+          id: program.id,
+          displayName: dto.purpose ?? program.purpose ?? "Fundraiser",
+        },
+        summary: dto.purpose ?? program.purpose ?? "Fundraiser update",
+      },
       audienceTags: ["FOLLOWING", "FUNDRAISING"],
       audienceUserIds: [program.memorial.ownerUserId],
       lat: program.memorial.location?.lat ?? undefined,
@@ -365,6 +378,7 @@ export class FundraisingService {
     const lastDonationAt = succeededDonations[0]?.madeAt?.toISOString() || null;
 
     return {
+      fundraisingId: program.id,
       memorialId,
       status: program.status,
       goalAmountCents: program.goalAmountCents,
@@ -1054,6 +1068,7 @@ export class FundraisingService {
       available: balance?.available ?? {},
       pending: balance?.pending ?? {},
       instantAvailable: balance?.instantAvailable,
+      totalReleased: balance?.totalReleased ?? {},
       retrievedAt: balance?.retrievedAt,
     };
   }

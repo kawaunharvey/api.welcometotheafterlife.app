@@ -12,7 +12,12 @@ import {
   UpdateMemorialDto,
   MemorialResponseDto,
 } from "./dto/memorial.dto";
-import { Visibility, MemorialStatus, FeedItemType } from "@prisma/client";
+import {
+  Visibility,
+  MemorialStatus,
+  FeedItemType,
+  Prisma,
+} from "@prisma/client";
 import { FeedsService } from "../feeds/feeds.service";
 import { AuditService } from "../audit/audit.service";
 import { ContentServiceClient } from "../../common";
@@ -53,6 +58,26 @@ export class MemorialsService {
       throw new ConflictException("Slug already exists");
     }
 
+    let location: { create: Prisma.LocationCreateInput } | undefined =
+      undefined;
+    if (
+      dto.location &&
+      typeof dto.location.lat === "number" &&
+      typeof dto.location.lng === "number"
+    ) {
+      location = {
+        create: {
+          type: "AFTERLIFE",
+          lat: dto.location.lat,
+          lng: dto.location.lng,
+          point: {
+            type: "Point",
+            coordinates: [dto.location.lng, dto.location.lat],
+          },
+        },
+      };
+    }
+
     // Create memorial
     const memorial = await this.prisma.memorial.create({
       data: {
@@ -61,7 +86,6 @@ export class MemorialsService {
         salutation: dto.salutation,
         yearOfBirth: dto.yearOfBirth,
         yearOfPassing: dto.yearOfPassing,
-        location: dto.location,
         bioSummary: dto.bioSummary,
         coverAssetId: dto.coverAssetId,
         coverAssetUrl: dto.coverAssetUrl,
@@ -71,22 +95,36 @@ export class MemorialsService {
         ownerUserId: userId,
         theme: dto.theme,
         status: MemorialStatus.ACTIVE,
+        location,
+      },
+      include: {
+        location: true,
       },
     });
+
+    console.log("Memorial created with ID:", memorial.id);
 
     await this.feedsService.createActivityFeedItem({
       type: FeedItemType.MEMORIAL_UPDATE,
       memorialId: memorial.id,
       actorUserId: userId,
-      title: `${memorial.displayName} memorial created`,
-      body: dto.bioSummary ?? undefined,
+      templatePayload: {
+        actor: { id: userId },
+        memorial: {
+          id: memorial.id,
+          displayName: memorial.displayName,
+        },
+        summary: dto.bioSummary ?? "Memorial created",
+      },
       audienceTags: ["FOLLOWING", "MEMORIAL"],
       audienceUserIds: [userId],
-      lat: dto.location?.lat ?? undefined,
-      lng: dto.location?.lng ?? undefined,
+      lat: memorial.location?.lat ?? undefined,
+      lng: memorial.location?.lng ?? undefined,
       country: dto.location?.country ?? undefined,
       visibility: memorial.visibility,
     });
+
+    console.log("Activity feed item created for memorial:", memorial.id);
 
     // Prime cache-backed feed for this memorial
     await this.rebuildMemorialFeedSafe(memorial.id);
@@ -114,25 +152,32 @@ export class MemorialsService {
       `getById - fetch start id=${id} requester=${currentUserId ?? "anonymous"}`,
     );
 
-    let memorial = await this.prisma.memorial.findUnique({
-      where: { id },
-      include: {
-        fundraising: {
-          select: {
-            id: true,
-            beneficiaryName: true,
-            beneficiaryOnboardingStatus: true,
-            beneficiaryExternalId: true,
+    const [memorialData, postsCount] = await Promise.all([
+      this.prisma.memorial.findUnique({
+        where: { id },
+        include: {
+          location: true,
+          fundraising: {
+            select: {
+              id: true,
+              beneficiaryName: true,
+              beneficiaryOnboardingStatus: true,
+              beneficiaryExternalId: true,
+            },
           },
         },
-      },
-    });
+      }),
+      this.prisma.post.count({ where: { memorialId: id } }),
+    ]);
+
+    let memorial = memorialData;
 
     if (!memorial) {
       // Detect common confusion: obituary IDs are not memorial IDs
       const memorialByObituaryId = await this.prisma.memorial.findFirst({
         where: { obituaryId: id },
         include: {
+          location: true,
           fundraising: {
             select: {
               id: true,
@@ -177,7 +222,7 @@ export class MemorialsService {
       `getById - success id=${id} visibility=${memorial.visibility} requester=${currentUserId ?? "anonymous"}`,
     );
 
-    return this.mapToResponse(memorial);
+    return this.mapToResponse(memorial, postsCount);
   }
 
   /**
@@ -190,6 +235,7 @@ export class MemorialsService {
     const memorial = await this.prisma.memorial.findUnique({
       where: { slug },
       include: {
+        location: true,
         fundraising: {
           select: {
             id: true,
@@ -205,6 +251,10 @@ export class MemorialsService {
       throw new NotFoundException("Memorial not found");
     }
 
+    const postsCount = await this.prisma.post.count({
+      where: { memorialId: memorial.id },
+    });
+
     // Check visibility
     if (
       memorial.visibility !== Visibility.PUBLIC &&
@@ -213,7 +263,7 @@ export class MemorialsService {
       throw new ForbiddenException("Not authorized to view this memorial");
     }
 
-    return this.mapToResponse(memorial);
+    return this.mapToResponse(memorial, postsCount);
   }
 
   /**
@@ -255,11 +305,19 @@ export class MemorialsService {
     const memorials = await this.prisma.memorial.findMany({
       where: { AND: andConditions } as never,
       orderBy: { createdAt: "desc" },
-
       take: 100,
+      include: { location: true },
     });
 
-    return memorials.map((m) => this.mapToResponse(m));
+    // Lightweight count per memorial; acceptable for <=100 results. If performance becomes an issue,
+    // replace with aggregation.
+    const counts = await Promise.all(
+      memorials.map((m) =>
+        this.prisma.post.count({ where: { memorialId: m.id } }),
+      ),
+    );
+
+    return memorials.map((m, idx) => this.mapToResponse(m, counts[idx]));
   }
 
   /**
@@ -272,6 +330,7 @@ export class MemorialsService {
   ): Promise<MemorialResponseDto> {
     const memorial = await this.prisma.memorial.findUnique({
       where: { id },
+      include: { location: true },
     });
 
     if (!memorial) {
@@ -291,6 +350,38 @@ export class MemorialsService {
       throw new BadRequestException("Each tag must be max 30 characters");
     }
 
+    let locationId = memorial.locationId ?? null;
+    if (dto.location) {
+      if (locationId) {
+        await this.prisma.location.update({
+          where: { id: locationId },
+          data: {
+            googlePlaceId: dto.location.googlePlaceId ?? undefined,
+            formattedAddress: dto.location.formattedAddress ?? undefined,
+            lat: dto.location.lat ?? undefined,
+            lng: dto.location.lng ?? undefined,
+            city: dto.location.city ?? undefined,
+            state: dto.location.state ?? undefined,
+            country: dto.location.country ?? undefined,
+          },
+        });
+      } else {
+        const createdLocation = await this.prisma.location.create({
+          data: {
+            type: memorial.location ? memorial.location.type : "AFTERLIFE",
+            googlePlaceId: dto.location.googlePlaceId ?? undefined,
+            formattedAddress: dto.location.formattedAddress ?? undefined,
+            lat: dto.location.lat ?? undefined,
+            lng: dto.location.lng ?? undefined,
+            city: dto.location.city ?? undefined,
+            state: dto.location.state ?? undefined,
+            country: dto.location.country ?? undefined,
+          },
+        });
+        locationId = createdLocation.id;
+      }
+    }
+
     const updated = await this.prisma.memorial.update({
       where: { id },
       data: {
@@ -299,22 +390,32 @@ export class MemorialsService {
         yearOfBirth: dto.yearOfBirth ?? memorial.yearOfBirth,
         theme: dto.theme ?? memorial.theme,
         yearOfPassing: dto.yearOfPassing ?? memorial.yearOfPassing,
-        location: dto.location ?? memorial.location,
         bioSummary: dto.bioSummary ?? memorial.bioSummary,
         tags: dto.tags ?? memorial.tags,
         coverAssetId: dto.coverAssetId ?? memorial.coverAssetId,
         coverAssetUrl: dto.coverAssetUrl ?? memorial.coverAssetUrl,
         shortId: dto.shortId ?? memorial.shortId,
         visibility: dto.visibility ?? memorial.visibility,
+        ...(locationId ? { locationId } : {}),
       },
+      include: { location: true },
     });
 
+    const postsCount = await this.prisma.post.count({
+      where: { memorialId: id },
+    });
     await this.feedsService.createActivityFeedItem({
       type: FeedItemType.MEMORIAL_UPDATE,
       memorialId: id,
       actorUserId: currentUserId,
-      title: `${updated.displayName} memorial updated`,
-      body: dto.bioSummary ?? undefined,
+      templatePayload: {
+        actor: { id: currentUserId },
+        memorial: {
+          id: updated.id,
+          displayName: updated.displayName,
+        },
+        summary: dto.bioSummary ?? "Memorial updated",
+      },
       audienceTags: ["FOLLOWING", "MEMORIAL"],
       audienceUserIds: [memorial.ownerUserId],
       lat: updated.location?.lat ?? undefined,
@@ -332,7 +433,7 @@ export class MemorialsService {
       payload: dto,
     });
 
-    return this.mapToResponse(updated);
+    return this.mapToResponse(updated, postsCount);
   }
 
   /**
@@ -344,6 +445,7 @@ export class MemorialsService {
   ): Promise<MemorialResponseDto> {
     const memorial = await this.prisma.memorial.findUnique({
       where: { id },
+      include: { location: true },
     });
 
     if (!memorial) {
@@ -362,8 +464,12 @@ export class MemorialsService {
         status: isArchived ? MemorialStatus.ACTIVE : MemorialStatus.ARCHIVED,
         archivedAt: isArchived ? null : new Date(),
       },
+      include: { location: true },
     });
 
+    const postsCount = await this.prisma.post.count({
+      where: { memorialId: id },
+    });
     // Record audit log
     await this.auditService.record({
       subjectType: "Memorial",
@@ -373,7 +479,7 @@ export class MemorialsService {
       payload: { status: updated.status },
     });
 
-    return this.mapToResponse(updated);
+    return this.mapToResponse(updated, postsCount);
   }
 
   /**
@@ -513,42 +619,45 @@ export class MemorialsService {
   /**
    * Map Prisma Memorial to response DTO.
    */
-  private mapToResponse(memorial: {
-    id: string;
-    slug: string;
-    shortId: string | null;
-    ownerUserId: string;
-    displayName: string;
-    salutation: string | null;
-    yearOfBirth: number | null;
-    yearOfPassing: number | null;
-    bioSummary: string | null;
-    tags: string[];
-    visibility: Visibility;
-    createdAt: Date;
-    theme: string | null;
-    updatedAt: Date;
-    archivedAt: Date | null;
-    obituaryId?: string | null;
-    obituaryServiceSessionId?: string | null;
-    coverAssetUrl?: string | null;
-    coverAssetId?: string | null;
-    fundraising?: {
+  private mapToResponse(
+    memorial: {
       id: string;
-      beneficiaryName: string | null;
-      beneficiaryOnboardingStatus: string | null;
-      beneficiaryExternalId: string | null;
-    } | null;
-    location: {
-      googlePlaceId?: string | null;
-      formattedAddress?: string | null;
-      lat?: number | null;
-      lng?: number | null;
-      city?: string | null;
-      state?: string | null;
-      country?: string | null;
-    } | null;
-  }): MemorialResponseDto {
+      slug: string;
+      shortId: string | null;
+      ownerUserId: string;
+      displayName: string;
+      salutation: string | null;
+      yearOfBirth: number | null;
+      yearOfPassing: number | null;
+      bioSummary: string | null;
+      tags: string[];
+      visibility: Visibility;
+      createdAt: Date;
+      theme: string | null;
+      updatedAt: Date;
+      archivedAt: Date | null;
+      obituaryId?: string | null;
+      obituaryServiceSessionId?: string | null;
+      coverAssetUrl?: string | null;
+      coverAssetId?: string | null;
+      fundraising?: {
+        id: string;
+        beneficiaryName: string | null;
+        beneficiaryOnboardingStatus: string | null;
+        beneficiaryExternalId: string | null;
+      } | null;
+      location: {
+        googlePlaceId?: string | null;
+        formattedAddress?: string | null;
+        lat?: number | null;
+        lng?: number | null;
+        city?: string | null;
+        state?: string | null;
+        country?: string | null;
+      } | null;
+    },
+    postsCount?: number,
+  ): MemorialResponseDto {
     return {
       id: memorial.id,
       slug: memorial.slug,
@@ -570,6 +679,7 @@ export class MemorialsService {
       coverAssetId: memorial.coverAssetId || null,
       obituaryServiceSessionId: memorial.obituaryServiceSessionId || null,
       theme: memorial.theme,
+      postsCount: postsCount ?? 0,
       links: {
         iosAppUrl: `${this.configService.get("IOS_APP_SCHEMA")}://memorial/${memorial.id}`,
         androidAppUrl: `${this.configService.get("ANDROID_APP_SCHEMA")}://memorial/${memorial.id}`,
@@ -649,6 +759,7 @@ export class MemorialsService {
   async findOne(memorialId: string): Promise<MemorialResponseDto | null> {
     const memorial = await this.prisma.memorial.findUnique({
       where: { id: memorialId },
+      include: { location: true },
     });
 
     if (!memorial) {

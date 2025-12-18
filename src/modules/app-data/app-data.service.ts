@@ -29,6 +29,9 @@ export class AppDataService {
       },
       orderBy: [{ createdAt: "desc" }],
       take: limit * 3, // fetch more to filter by distance in JS
+      include: {
+        location: true,
+      },
     });
     // Calculate distance in JS (since Prisma/MongoDB doesn't support geo queries directly)
     const withDistance = memorials
@@ -77,7 +80,9 @@ export class AppDataService {
         status: "ACTIVE",
       },
       include: {
-        memorial: true,
+        memorial: {
+          include: { location: true },
+        },
       },
     });
     // Filter by >50% of goal
@@ -209,5 +214,25 @@ export class AppDataService {
         Math.sin(dLng / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
+  }
+
+  async getAppVersion() {
+    return {
+      version: process.env.APP_VERSION || "unknown",
+    };
+  }
+  /** Get application limits and restrictions
+   */
+  async getAppLimits() {
+    return {
+      maxSignUps: 1000,
+      maxMemorialsPerUser: 1,
+      inviteOnly: true,
+      maxFundraisingProgramsPerUser: 1,
+      maxFundraisingGoalAmountCents: 2000000, // $20,000
+      maxAmountDonatedCents: 250000, // $2,500
+      acceptedCurrencies: ["USD"],
+      maxPostLimitPerUser: 25,
+    };
   }
 }

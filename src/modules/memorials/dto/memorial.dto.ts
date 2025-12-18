@@ -285,6 +285,9 @@ export class MemorialResponseDto {
   @ApiPropertyOptional({ description: "Short URL" })
   shortUrl?: string | null;
 
+  @ApiProperty({ description: "Total number of posts for this memorial" })
+  postsCount: number;
+
   @ApiPropertyOptional({ description: "Links" })
   links?: {
     iosAppUrl?: string;

@@ -128,6 +128,70 @@ enum FeedItemType {
   AI_SUMMARY
 }
 
+enum DecoratorType {
+  SALUTATION
+  THEME
+  STICKER
+  BACKGROUND
+  ICON
+}
+
+enum DecoratorStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum FeedbackCategory {
+  PAYOUT_ISSUE
+  MEMORIAL_ISSUE
+  DONATION_ISSUE
+  BUG
+  CONTENT_ISSUE
+  PRODUCT_FEEDBACK
+  POSITIVE_FEEDBACK
+  OTHER
+}
+
+enum FeedbackSentiment {
+  POSITIVE
+  NEUTRAL
+  NEGATIVE
+}
+
+enum FeedbackSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum FeedbackStatus {
+  NEW
+  IN_REVIEW
+  RESOLVED
+  DISMISSED
+}
+
+enum FeedbackSource {
+  WEB
+  MOBILE
+  SUPPORT_AGENT
+  SYSTEM
+}
+
+enum FeedbackChannel {
+  IN_APP_FORM
+  EMAIL_IMPORT
+  SUPPORT_API
+  OTHER
+}
+
+type GeoJsonPoint {
+  type        String  @default("Point")
+  coordinates Float[]
+}
+
 // ---------------------- Users & Sessions --------------------
 
 model User {
@@ -151,6 +215,7 @@ model User {
   comments              Comment[]              @relation(name: "UserComments")
   posts                 Post[]                 @relation(name: "UserPosts")
   memorialRelationships MemorialRelationship[] @relation(name: "MemorialRelationshipUser")
+  feedbackReports       FeedbackReport[]       @relation(name: "UserFeedbackReports")
 }
 
 model Session {
@@ -182,7 +247,9 @@ model Memorial {
   yearOfBirth              Int?
   yearOfPassing            Int?
   theme                    String?                @default("default")
-  location                 Location?
+  locationId               String?                @db.ObjectId
+  location                 Location?              @relation(fields: [locationId], references: [id])
+  point                    GeoJsonPoint?
   bioSummary               String?
   tags                     String[]
   visibility               Visibility             @default(PUBLIC)
@@ -200,12 +267,13 @@ model Memorial {
   verificationCase         VerificationCase?      @relation(name: "MemorialVerification")
   fundraising              FundraisingProgram?    @relation(name: "MemorialFundraising")
   posts                    Post[]                 @relation(name: "PostMemorialPrimary")
-  events                   Event[]                @relation(name: "MemorialEvents")
   memorialRelationships    MemorialRelationship[] @relation(name: "MemorialRelationshipMemorial")
+  decorators               MemorialDecorator[]    @relation(name: "MemorialDecoratorsMemorial")
+  feedbackReports          FeedbackReport[]       @relation(name: "MemorialFeedbackReports")
 
   @@index([displayName])
   @@index([verificationStatus, status])
-  @@index([location])
+  @@index([locationId])
 }
 
 type ObituaryCaption {
@@ -233,14 +301,21 @@ model PublishedObituary {
   @@index([draftId])
 }
 
-type Location {
+model Location {
+  id               String        @id @default(auto()) @map("_id") @db.ObjectId
   googlePlaceId    String?
   formattedAddress String?
+  type             String // "RESTING_PLACE" | "AFTERLIFE" | "AR_VIGIL" | etc.
   lat              Float?
   lng              Float?
   city             String?
   state            String?
+  point            GeoJsonPoint?
   country          String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  memorials Memorial[]
 }
 
 // ---------------------- Verification ------------------------
@@ -495,20 +570,25 @@ type FeedCta {
   androidAppUrl String?
 }
 
-model FeedItem {
-  id String @id @default(auto()) @map("_id") @db.ObjectId
+enum StatementType {
+  STRING
+  RECORD
+}
 
+type Statement {
+  text     String
+  sourceId String?
+  type     StatementType
+}
+
+model FeedStatement {
+  id            String       @id @default(auto()) @map("_id") @db.ObjectId
   type          FeedItemType
+  parts         Statement[]
+  actorUserId   String?      @db.ObjectId
   memorialId    String?      @db.ObjectId
   fundraisingId String?      @db.ObjectId
   obituaryId    String?      @db.ObjectId
-  eventId       String?      @db.ObjectId
-  actorUserId   String?      @db.ObjectId
-
-  title  String
-  body   String?
-  badges String[]
-  cta    FeedCta?
 
   audienceTags    String[]
   audienceUserIds String[]
@@ -519,9 +599,8 @@ model FeedItem {
   country String?
 
   visibility Visibility?
-  sources    String[]
-  media      Json?
-  metadata   Json?
+
+  metadata Json?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -629,6 +708,63 @@ model Comment {
   @@index([authorUserId, createdAt])
 }
 
+// ---------------------- Feedback Reports -------------------
+
+model FeedbackReport {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  userId String? @db.ObjectId
+  user   User?   @relation(name: "UserFeedbackReports", fields: [userId], references: [id])
+
+  memorialId String?   @db.ObjectId
+  memorial   Memorial? @relation(name: "MemorialFeedbackReports", fields: [memorialId], references: [id])
+
+  fundraisingId String? @db.ObjectId
+  donationId    String? @db.ObjectId
+  payoutId      String? @db.ObjectId
+
+  category  FeedbackCategory
+  sentiment FeedbackSentiment
+  severity  FeedbackSeverity?
+  status    FeedbackStatus    @default(NEW)
+  source    FeedbackSource?
+  channel   FeedbackChannel?
+
+  title       String?
+  body        String
+  tags        String[]
+  attachments Json?
+
+  reporterEmail      String?
+  linkedTicketId     String?
+  followupRequired   Boolean @default(false)
+  consentedToContact Boolean @default(false)
+  notifiedUser       Boolean @default(false)
+
+  appVersion String?
+  platform   String?
+  locale     String?
+  timezone   String?
+  country    String?
+  ipAddress  String?
+  userAgent  String?
+
+  resolutionSummary String?
+  resolutionAt      DateTime?
+
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([category, createdAt])
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
+  @@index([memorialId, createdAt])
+  @@index([fundraisingId, createdAt])
+  @@index([linkedTicketId])
+}
+
 // ---------------------- Livestreams --------------------------
 
 model LivestreamSession {
@@ -637,9 +773,6 @@ model LivestreamSession {
   // FK lives here; back-rel on Post/Event
   postId String? @unique @db.ObjectId
   post   Post?   @relation(name: "PostLivestream", fields: [postId], references: [id])
-
-  eventId String? @unique @db.ObjectId
-  event   Event?  @relation(name: "EventLivestream", fields: [eventId], references: [id])
 
   state       LivestreamState  @default(SCHEDULED)
   ingest      LivestreamIngest
@@ -663,98 +796,85 @@ type LivestreamIngest {
   protocol String? // "rtmp" | "webrtc"
 }
 
-// ---------------------- Events & RSVPs -----------------------
-
-model Event {
-  id String @id @default(auto()) @map("_id") @db.ObjectId
-
-  memorialId String   @db.ObjectId
-  memorial   Memorial @relation(name: "MemorialEvents", fields: [memorialId], references: [id])
-
-  inMemoryOf  String?
-  eventType   String
-  title       String
-  description String?
-
-  startAt  DateTime
-  endAt    DateTime
-  timezone String
-
-  location        EventLocation
-  visibility      Visibility    @default(PUBLIC)
-  capacity        Int?
-  waitlistEnabled Boolean       @default(false)
-
-  hostUserId String
-  coHosts    String[]
-
-  // livestream back-relation (FK on LivestreamSession)
-  livestream LivestreamSession? @relation(name: "EventLivestream")
-
-  status    String   @default("PUBLISHED")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  rsvps RSVP[]       @relation(name: "EventRsvps")
-  media EventMedia[] @relation(name: "EventMediaItems")
-
-  // comments on events via consolidated Comment target (no hard FK)
-  // (Optionally, you can maintain a denormalized commentsCount int here.)
-
-  @@index([memorialId, startAt])
-  @@index([visibility, startAt])
-}
-
-type EventLocation {
-  kind             String // "physical" | "virtual" | "hybrid"
-  googlePlaceId    String?
-  formattedAddress String?
-  lat              Float?
-  lng              Float?
-  joinUrl          String?
-}
-
-model RSVP {
-  id String @id @default(auto()) @map("_id") @db.ObjectId
-
-  eventId String @db.ObjectId
-  event   Event  @relation(name: "EventRsvps", fields: [eventId], references: [id])
-
-  userId      String?
-  email       String?
-  status      RSVPStatus @default(GOING)
-  guestsCount Int        @default(1)
-  notes       String?
-
-  checkin   Checkin?
-  createdAt DateTime @default(now())
-
-  @@index([eventId, status])
-  @@index([email])
-}
-
-type Checkin {
-  at DateTime?
-  by String? // staff/co-host userId
-}
-
-model EventMedia {
-  id String @id @default(auto()) @map("_id") @db.ObjectId
-
-  eventId String @db.ObjectId
-  event   Event  @relation(name: "EventMediaItems", fields: [eventId], references: [id])
-
-  assetId   String // Content Service asset id (program, gallery, recording)
-  kind      String // "program" | "gallery" | "recording"
-  createdAt DateTime @default(now())
-
-  @@index([eventId, kind])
-}
-
 type Proximity {
   lat     Float
   lng     Float
   radiusM Int
+}
+
+model DecoratorCollection {
+  id          String  @id @default(auto()) @map("_id") @db.ObjectId
+  slug        String  @unique
+  label       String
+  description String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  decorators Decorator[]
+}
+
+// ---------------------- Decorators -------------------------
+
+model Decorator {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  type        DecoratorType
+  label       String
+  description String?
+
+  categories String[]
+  tags       String[]
+
+  status     DecoratorStatus @default(ACTIVE)
+  visibility Visibility      @default(PUBLIC)
+
+  textValue    String?
+  assetUrl     String?
+  assetType    String?
+  assetId      String?
+  thumbnailUrl String?
+  metadata     Json?
+  collectionId String?              @db.ObjectId
+  collection   DecoratorCollection? @relation(fields: [collectionId], references: [id])
+
+  createdByUserId String? @db.ObjectId
+  updatedByUserId String? @db.ObjectId
+
+  usageCount Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  memorialDecorators MemorialDecorator[] @relation(name: "MemorialDecoratorDecorator")
+
+  @@index([type, status])
+  @@index([tags])
+  @@index([categories])
+  @@index([collectionId])
+}
+
+model MemorialDecorator {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+
+  memorialId String   @db.ObjectId
+  memorial   Memorial @relation(name: "MemorialDecoratorsMemorial", fields: [memorialId], references: [id])
+
+  decoratorId String    @db.ObjectId
+  decorator   Decorator @relation(name: "MemorialDecoratorDecorator", fields: [decoratorId], references: [id])
+
+  appliedByUserId String?   @db.ObjectId
+  order           Int       @default(0)
+  isPrimary       Boolean   @default(false)
+  variant         Json?
+  effectiveFrom   DateTime?
+  effectiveUntil  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([memorialId, decoratorId])
+  @@index([memorialId])
+  @@index([decoratorId, isPrimary])
 }
 
 // ---------------------- Audit & Logs -------------------------

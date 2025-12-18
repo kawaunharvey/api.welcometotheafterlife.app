@@ -25,6 +25,7 @@ interface PaymentEventData {
   metadata?: {
     afterlifeMemorialId?: string;
     afterlifeFundraisingId?: string;
+    donorEmail?: string;
     donorDisplay?: string;
     message?: string;
   };
@@ -164,14 +165,39 @@ export class BillingWebhookService {
       });
 
       if (fundraising?.memorialId) {
-        const donorName = data.metadata?.donorDisplay || "Someone";
+        const memorial = await this.prisma.memorial.findUnique({
+          where: { id: fundraising.memorialId },
+        });
+
+        let donorName = "Someone";
+        let donorUserId: string | null = null;
+        if (data.metadata?.donorEmail) {
+          const user = await this.prisma.user.findUnique({
+            where: { email: data.metadata?.donorEmail },
+          });
+          donorName = user?.handle ?? donorName;
+          donorUserId = user?.id ?? donorUserId;
+        }
+
         await this.feedsService.createActivityFeedItem({
           type: FeedItemType.DONATION,
           fundraisingId: data.fundraisingId,
           memorialId: fundraising.memorialId,
-          title: `${donorName} donated`,
-          body: data.metadata?.message,
-          badges: ["DONATION"],
+          templatePayload: {
+            actor: donorUserId
+              ? { id: donorUserId, displayName: donorName }
+              : { displayName: donorName },
+            donation: {
+              id: donation.id,
+              amountCents: data.amountCents,
+              currency: data.currency,
+            },
+            target: {
+              id: fundraising.memorialId,
+              displayName: memorial?.displayName ?? "a loved one",
+            },
+            summary: data.metadata?.message,
+          },
           audienceTags: ["FOLLOWING", "FUNDRAISING"],
           audienceUserIds: fundraising.memorial?.ownerUserId
             ? [fundraising.memorial.ownerUserId]
@@ -180,7 +206,6 @@ export class BillingWebhookService {
           lng: fundraising.memorial?.location?.lng ?? undefined,
           country: fundraising.memorial?.location?.country ?? undefined,
           visibility: fundraising.memorial?.visibility,
-          sources: [data.paymentId],
           metadata: {
             amountCents: data.amountCents,
             currency: data.currency,

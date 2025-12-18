@@ -2,16 +2,18 @@ import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import {
   FollowTargetType,
-  FeedItem,
   FeedItemType,
+  FeedStatement,
   LikeTargetType,
   Post,
   PostStatus,
   Prisma,
   Visibility,
+  Statement,
 } from "@prisma/client";
 import * as crypto from "crypto";
 import { RedisService } from "../redis/redis.service";
+import { FeedTemplateService } from "./template.service";
 
 export interface FeedEntryWithPost {
   id: string;
@@ -66,24 +68,15 @@ type PostWithMemorial = Prisma.PostGetPayload<{
   };
 }>;
 
-export interface FeedItemCtaDto {
-  label?: string | null;
-  webUrl?: string | null;
-  iosAppUrl?: string | null;
-  androidAppUrl?: string | null;
-}
-
 export interface ActivityFeedItemDto {
   id: string;
   type: FeedItemType;
   memorialId?: string | null;
+  memorialDisplayName?: string | null;
   fundraisingId?: string | null;
   obituaryId?: string | null;
-  eventId?: string | null;
   actorUserId?: string | null;
-  title: string;
-  body?: string | null;
-  badges: string[];
+  parts: Statement[];
   audienceTags: string[];
   audienceUserIds: string[];
   lat?: number | null;
@@ -91,33 +84,25 @@ export interface ActivityFeedItemDto {
   geoHash?: string | null;
   country?: string | null;
   visibility?: Visibility | null;
-  sources: string[];
-  media?: Prisma.JsonValue;
   metadata?: Prisma.JsonValue;
-  cta?: FeedItemCtaDto;
   createdAt: Date;
 }
 
-export interface CreateFeedItemInput {
+export interface CreateFeedStatementInput {
   type: FeedItemType;
   memorialId?: string | null;
   fundraisingId?: string | null;
   obituaryId?: string | null;
-  eventId?: string | null;
   actorUserId?: string | null;
-  title: string;
-  body?: string | null;
-  badges?: string[];
   audienceTags?: string[];
   audienceUserIds?: string[];
   lat?: number | null;
   lng?: number | null;
   country?: string | null;
   visibility?: Visibility | null;
-  sources?: string[];
-  media?: Prisma.JsonValue;
   metadata?: Prisma.JsonValue;
-  cta?: FeedItemCtaDto;
+  parts?: Statement[];
+  templatePayload?: Record<string, unknown>;
 }
 
 @Injectable()
@@ -131,13 +116,14 @@ export class FeedsService {
   constructor(
     private prisma: PrismaService,
     private redis: RedisService,
+    private readonly templateService: FeedTemplateService,
   ) {}
 
   /**
    * Create a structured activity feed item for memorial/fundraising/obituary events.
    */
   async createActivityFeedItem(
-    input: CreateFeedItemInput,
+    input: CreateFeedStatementInput,
   ): Promise<ActivityFeedItemDto> {
     const geoHash =
       input.lat !== undefined &&
@@ -147,17 +133,40 @@ export class FeedsService {
         ? this.computeGeoHash(input.lat, input.lng)
         : undefined;
 
-    const item = await this.prisma.feedItem.create({
+    const parts =
+      input.parts ??
+      this.templateService.renderParts({
+        type: input.type,
+        payload: input.templatePayload ?? {},
+      }).parts;
+
+    const memorialTheme = input.memorialId
+      ? (
+          await this.prisma.memorial.findUnique({
+            where: { id: input.memorialId },
+            select: { theme: true },
+          })
+        )?.theme
+      : undefined;
+
+    const mergedMetadata =
+      memorialTheme !== undefined
+        ? {
+            ...(input.metadata && typeof input.metadata === "object"
+              ? (input.metadata as Record<string, unknown>)
+              : {}),
+            theme: memorialTheme,
+          }
+        : (input.metadata ?? undefined);
+
+    const item = await this.prisma.feedStatement.create({
       data: {
         type: input.type,
         memorialId: input.memorialId ?? undefined,
         fundraisingId: input.fundraisingId ?? undefined,
         obituaryId: input.obituaryId ?? undefined,
-        eventId: input.eventId ?? undefined,
+        parts,
         actorUserId: input.actorUserId ?? undefined,
-        title: input.title,
-        body: input.body ?? undefined,
-        badges: input.badges ?? [],
         audienceTags: input.audienceTags ?? [],
         audienceUserIds: input.audienceUserIds ?? [],
         lat: input.lat ?? undefined,
@@ -165,21 +174,15 @@ export class FeedsService {
         geoHash: geoHash ?? undefined,
         country: input.country ?? undefined,
         visibility: input.visibility ?? undefined,
-        sources: input.sources ?? [],
-        media: input.media ?? undefined,
-        metadata: input.metadata ?? undefined,
-        cta: input.cta
-          ? {
-              label: input.cta.label ?? undefined,
-              webUrl: input.cta.webUrl ?? undefined,
-              iosAppUrl: input.cta.iosAppUrl ?? undefined,
-              androidAppUrl: input.cta.androidAppUrl ?? undefined,
-            }
-          : undefined,
+        metadata: mergedMetadata,
       },
     });
 
-    return this.buildActivityFeedItemDto(item);
+    const memorialDisplayName = item.memorialId
+      ? await this.getMemorialDisplayName(item.memorialId)
+      : null;
+
+    return this.buildActivityFeedItemDto(item, memorialDisplayName);
   }
 
   /**
@@ -207,7 +210,7 @@ export class FeedsService {
         ? this.computeGeoHash(lat, lng)
         : undefined;
 
-    const filters: Prisma.FeedItemWhereInput[] = [];
+    const filters: Prisma.FeedStatementWhereInput[] = [];
     if (normalizedCountry) {
       filters.push({ country: normalizedCountry });
     }
@@ -222,17 +225,19 @@ export class FeedsService {
       filters.push({ memorialId: { in: followedMemorialIds } });
     }
 
-    const where: Prisma.FeedItemWhereInput =
+    const where: Prisma.FeedStatementWhereInput =
       filters.length > 0 ? { OR: filters } : {};
 
-    const items = await this.prisma.feedItem.findMany({
+    const items = await this.prisma.feedStatement.findMany({
       where,
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       take: safeLimit + 1,
     });
 
-    return this.paginateActivityItems(items, safeLimit);
+    const memorialNames = await this.hydrateMemorialNames(items);
+
+    return this.paginateActivityItems(items, safeLimit, memorialNames);
   }
 
   /**
@@ -248,7 +253,7 @@ export class FeedsService {
     cursor?: string;
   }) {
     const safeLimit = Math.max(1, Math.min(limit, this.maxFeedSize));
-    const filters: Prisma.FeedItemWhereInput[] = [];
+    const filters: Prisma.FeedStatementWhereInput[] = [];
 
     filters.push({ audienceUserIds: { has: userId } });
     filters.push({ actorUserId: userId });
@@ -258,16 +263,18 @@ export class FeedsService {
       filters.push({ memorialId: { in: followedMemorialIds } });
     }
 
-    const where: Prisma.FeedItemWhereInput = { OR: filters };
+    const where: Prisma.FeedStatementWhereInput = { OR: filters };
 
-    const items = await this.prisma.feedItem.findMany({
+    const items = await this.prisma.feedStatement.findMany({
       where,
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       take: safeLimit + 1,
     });
 
-    return this.paginateActivityItems(items, safeLimit);
+    const memorialNames = await this.hydrateMemorialNames(items);
+
+    return this.paginateActivityItems(items, safeLimit, memorialNames);
   }
 
   /**
@@ -825,27 +832,70 @@ export class FeedsService {
     return crypto.createHash("sha1").update(`${scope}:${postId}`).digest("hex");
   }
 
-  private paginateActivityItems(items: FeedItem[], limit: number) {
-    const hasNext = items.length > limit;
-    const slice = hasNext ? items.slice(0, limit) : items;
+  private async getMemorialDisplayName(memorialId: string) {
+    const memorial = await this.prisma.memorial.findUnique({
+      where: { id: memorialId },
+      select: { displayName: true },
+    });
+
+    return memorial?.displayName ?? null;
+  }
+
+  private async hydrateMemorialNames(items: FeedStatement[]) {
+    const memorialIds = Array.from(
+      new Set(
+        items.map((i) => i.memorialId).filter((id): id is string => !!id),
+      ),
+    );
+
+    if (!memorialIds.length) {
+      return new Map<string, string | null>();
+    }
+
+    const memorials = await this.prisma.memorial.findMany({
+      where: { id: { in: memorialIds } },
+      select: { id: true, displayName: true },
+    });
+
+    return new Map<string, string | null>(
+      memorials.map((m) => [m.id, m.displayName ?? null]),
+    );
+  }
+
+  private paginateActivityItems(
+    items: FeedStatement[],
+    limit: number,
+    memorialNames?: Map<string, string | null>,
+  ) {
+    const deduped = Array.from(new Map(items.map((i) => [i.id, i])).values());
+    const hasNext = deduped.length > limit;
+    const slice = hasNext ? deduped.slice(0, limit) : deduped;
     return {
-      items: slice.map((item) => this.buildActivityFeedItemDto(item)),
+      items: slice.map((item) =>
+        this.buildActivityFeedItemDto(
+          item,
+          item.memorialId
+            ? (memorialNames?.get(item.memorialId) ?? null)
+            : null,
+        ),
+      ),
       nextCursor: hasNext ? slice[slice.length - 1].id : null,
     };
   }
 
-  private buildActivityFeedItemDto(item: FeedItem): ActivityFeedItemDto {
+  private buildActivityFeedItemDto(
+    item: FeedStatement,
+    memorialDisplayName?: string | null,
+  ): ActivityFeedItemDto {
     return {
       id: item.id,
       type: item.type,
       memorialId: item.memorialId,
+      memorialDisplayName: memorialDisplayName ?? null,
       fundraisingId: item.fundraisingId,
       obituaryId: item.obituaryId,
-      eventId: item.eventId,
       actorUserId: item.actorUserId,
-      title: item.title,
-      body: item.body,
-      badges: item.badges ?? [],
+      parts: item.parts ?? [],
       audienceTags: item.audienceTags ?? [],
       audienceUserIds: item.audienceUserIds ?? [],
       lat: item.lat,
@@ -853,17 +903,7 @@ export class FeedsService {
       geoHash: item.geoHash,
       country: item.country,
       visibility: item.visibility,
-      sources: item.sources ?? [],
-      media: item.media,
       metadata: item.metadata,
-      cta: item.cta
-        ? {
-            label: item.cta.label,
-            webUrl: item.cta.webUrl,
-            iosAppUrl: item.cta.iosAppUrl,
-            androidAppUrl: item.cta.androidAppUrl,
-          }
-        : undefined,
       createdAt: item.createdAt,
     };
   }

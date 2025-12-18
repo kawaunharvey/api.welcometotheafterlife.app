@@ -15,9 +15,11 @@ import { UsersModule } from "@/modules/users/users.module";
 import { FundraisingModule } from "@/modules/fundraising/fundraising.module";
 import { VerificationModule } from "@/modules/verification/verification.module";
 import { CacheModule } from "@/common/cache/cache.module";
+import { DecoratorModule } from "@/modules/decorator/decorator.module";
 import { HealthController } from "./health/health.controller";
 import { AppDataModule } from "./modules/app-data/app-data.module";
 import { LocationsModule } from "@/modules/locations/locations.module";
+import { FeedbackModule } from "@/modules/feedback/feedback.module";
 
 @Module({
   imports: [
@@ -89,6 +91,8 @@ import { LocationsModule } from "@/modules/locations/locations.module";
     VerificationModule,
     AppDataModule,
     LocationsModule,
+    DecoratorModule,
+    FeedbackModule,
   ],
   controllers: [HealthController],
 })

@@ -681,8 +681,14 @@ export class MemorialObituaryService {
       captionText: string;
       createdAt: Date;
     } | null = null;
-    try {
-      const captionResponse = await this.obituaryClient.getCaptions(draftId);
+
+    this.logger.debug(
+      `publishDraft - resolving captions for draft ${draftId} memorial ${memorialId}`,
+    );
+
+    const captionResponse = await this.fetchCaptionsWithFallback(draftId);
+
+    if (captionResponse) {
       captionPayload = {
         draftId,
         captionText: JSON.stringify(captionResponse.captions ?? []),
@@ -690,28 +696,13 @@ export class MemorialObituaryService {
           ? new Date(captionResponse.createdAt)
           : new Date(),
       };
-    } catch (error: any) {
-      const status = error?.response?.status;
-      if (status === 404) {
-        try {
-          const generated = await this.obituaryClient.generateCaptions(draftId);
-          captionPayload = {
-            draftId,
-            captionText: JSON.stringify(generated.captions ?? []),
-            createdAt: generated.createdAt
-              ? new Date(generated.createdAt)
-              : new Date(),
-          };
-        } catch (genError) {
-          this.logger.warn(
-            `publishDraft - failed to generate captions for draft ${draftId}: ${genError}`,
-          );
-        }
-      } else {
-        this.logger.warn(
-          `publishDraft - failed to fetch captions for draft ${draftId}: ${error}`,
-        );
-      }
+      this.logger.debug(
+        `publishDraft - captions resolved for draft ${draftId} (variants=${captionResponse.captions?.length ?? 0})`,
+      );
+    } else {
+      this.logger.warn(
+        `publishDraft - captions unavailable for draft ${draftId}; proceeding without captions`,
+      );
     }
 
     // Persist published copy (attach captions when available)
@@ -763,15 +754,72 @@ export class MemorialObituaryService {
       type: FeedItemType.OBITUARY_UPDATE,
       memorialId,
       obituaryId: published.id,
-      title: "Obituary published",
-      body: draft.content?.slice(0, 240) ?? undefined,
+      templatePayload: {
+        obituary: {
+          id: published.id,
+          displayName: memorial.displayName ?? "Obituary",
+        },
+        summary: draft.content?.slice(0, 240) ?? "Obituary published",
+      },
       audienceTags: ["FOLLOWING", "MEMORIAL"],
       audienceUserIds: [memorial.ownerUserId],
       visibility: memorial.visibility,
-      sources: [draftId],
     });
 
     return published;
+  }
+
+  /**
+   * Fetch captions for a draft with cache + generate fallback to avoid bubbling 404s during publish
+   */
+  private async fetchCaptionsWithFallback(
+    draftId: string,
+  ): Promise<CaptionResponse | null> {
+    const cached = await this.obituaryCache.getCachedDraftCaptions(draftId);
+    if (cached) {
+      this.logger.debug(
+        `fetchCaptionsWithFallback - using cached captions for draft ${draftId} (variants=${cached.captions?.length ?? 0})`,
+      );
+      return cached;
+    }
+
+    this.logger.debug(
+      `fetchCaptionsWithFallback - fetching captions for draft ${draftId}`,
+    );
+
+    try {
+      const upstream = await this.obituaryClient.getCaptions(draftId);
+      await this.obituaryCache.cacheDraftCaptions(draftId, upstream);
+      this.logger.log(
+        `fetchCaptionsWithFallback - fetched captions for draft ${draftId} (variants=${upstream.captions?.length ?? 0})`,
+      );
+      return upstream;
+    } catch (error: any) {
+      const status = error?.response?.status;
+      if (status && status !== 404) {
+        this.logger.warn(
+          `fetchCaptionsWithFallback - failed to fetch captions for draft ${draftId}${status ? ` (status ${status})` : ""}`,
+        );
+      }
+    }
+
+    this.logger.debug(
+      `fetchCaptionsWithFallback - generating captions for draft ${draftId} after miss`,
+    );
+
+    try {
+      const generated = await this.obituaryClient.generateCaptions(draftId);
+      await this.obituaryCache.cacheDraftCaptions(draftId, generated);
+      this.logger.log(
+        `fetchCaptionsWithFallback - generated captions for draft ${draftId} (variants=${generated.captions?.length ?? 0})`,
+      );
+      return generated;
+    } catch (genError) {
+      this.logger.warn(
+        `fetchCaptionsWithFallback - failed to generate captions for draft ${draftId}: ${genError}`,
+      );
+      return null;
+    }
   }
 
   /**

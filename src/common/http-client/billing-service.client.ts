@@ -167,6 +167,7 @@ export interface PayoutBalanceResponse {
   available: Record<string, number>;
   pending: Record<string, number>;
   instantAvailable?: Record<string, number>;
+  totalReleased?: Record<string, number>;
   retrievedAt: string;
 }
 

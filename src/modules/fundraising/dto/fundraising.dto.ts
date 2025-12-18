@@ -253,6 +253,7 @@ export class RequestPayoutDto {
 }
 
 export interface FundraisingProgramSummaryDto {
+  fundraisingId: string;
   memorialId: string;
   status: string;
   goalAmountCents: number | null;

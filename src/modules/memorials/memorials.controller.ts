@@ -8,6 +8,7 @@ import {
   Body,
   UseGuards,
   HttpCode,
+  BadRequestException,
 } from "@nestjs/common";
 import {
   ApiTags,
@@ -52,7 +53,11 @@ export class MemorialsController {
     @Body() dto: CreateMemorialDto,
     @CurrentUser() user: CurrentUserContext,
   ): Promise<MemorialResponseDto> {
-    return this.memorialsService.create(dto, user.userId);
+    try {
+      return this.memorialsService.create(dto, user.userId);
+    } catch (error) {
+      throw new BadRequestException("Failed to create memorial");
+    }
   }
 
   /**

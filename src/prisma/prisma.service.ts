@@ -11,6 +11,15 @@ export class PrismaService
   implements OnModuleInit, BeforeApplicationShutdown
 {
   async onModuleInit() {
+    await this.$runCommandRaw({
+      createIndexes: "Location",
+      indexes: [
+        {
+          name: "point_2dsphere",
+          key: { point: "2dsphere" },
+        },
+      ],
+    });
     await this.$connect();
   }
 
