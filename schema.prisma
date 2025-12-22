@@ -890,3 +890,152 @@ model AuditLog {
 
   @@index([subjectType, subjectId, createdAt])
 }
+
+// ---------------------- Ledger Domain Enums ------------------
+
+enum LedgerActionStatus {
+  NOT_HANDLED
+  IN_PROGRESS
+  HANDLED
+}
+
+enum LedgerAttachmentType {
+  NOTE
+  LINK
+  FUNDRAISER_REFERENCE
+  MEMORIAL_REFERENCE
+  UNDERWORLD_QUERY
+  UNDERWORLD_BUSINESS_REFERENCE
+  UNDERWORLD_SERVICE_REFERENCE
+}
+
+enum LedgerCollaboratorRole {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+enum LedgerStatusUpdateType {
+  LEDGER_CREATED
+  ACTION_CREATED
+  ACTION_STATUS_CHANGED
+  ATTACHMENT_FILLED
+  COLLABORATOR_ADDED
+  COLLABORATOR_REMOVED
+  COLLABORATOR_ROLE_CHANGED
+  USER_NOTE
+}
+
+// ---------------------- Ledger Domain Models -----------------
+
+model Ledger {
+  id          String  @id @default(auto()) @map("_id") @db.ObjectId
+  ownerUserId String  @db.ObjectId
+  title       String
+  description String?
+
+  // Optional platform entity linkage (stored as metadata, not relations)
+  linkedEntityType String? // "memorial" | "fundraiser" | "event" | "underworld_activity"
+  linkedEntityId   String? // The ID of the linked entity
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  actions       LedgerAction[]       @relation(name: "LedgerActions")
+  collaborators LedgerCollaborator[] @relation(name: "LedgerCollaborators")
+  statusUpdates LedgerStatusUpdate[] @relation(name: "LedgerStatusUpdates")
+
+  @@index([ownerUserId, createdAt])
+  @@index([linkedEntityType, linkedEntityId])
+}
+
+model LedgerAction {
+  id       String @id @default(auto()) @map("_id") @db.ObjectId
+  ledgerId String @db.ObjectId
+  ledger   Ledger @relation(name: "LedgerActions", fields: [ledgerId], references: [id], onDelete: Cascade)
+
+  title       String
+  description String?
+  status      LedgerActionStatus @default(NOT_HANDLED)
+
+  // Creator metadata (captured from CurrentUser at creation)
+  creatorUserId String @db.ObjectId
+  creatorEmail  String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  attachments   LedgerAttachment[]   @relation(name: "ActionAttachments")
+  statusUpdates LedgerStatusUpdate[] @relation(name: "ActionStatusUpdates")
+
+  @@index([ledgerId, status])
+  @@index([creatorUserId])
+  @@index([createdAt])
+}
+
+model LedgerAttachment {
+  id       String       @id @default(auto()) @map("_id") @db.ObjectId
+  actionId String       @db.ObjectId
+  action   LedgerAction @relation(name: "ActionAttachments", fields: [actionId], references: [id], onDelete: Cascade)
+
+  type    LedgerAttachmentType
+  slotKey String // Unique key for single-slot types, can repeat for multi-slot
+  data    Json? // Null indicates an expected but unfilled slot
+
+  // Creator metadata
+  creatorUserId String @db.ObjectId
+  creatorEmail  String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([actionId, slotKey]) // Prevents duplicate slots within an action
+  @@index([actionId, type])
+  @@index([type, createdAt])
+}
+
+model LedgerCollaborator {
+  id       String @id @default(auto()) @map("_id") @db.ObjectId
+  ledgerId String @db.ObjectId
+  ledger   Ledger @relation(name: "LedgerCollaborators", fields: [ledgerId], references: [id], onDelete: Cascade)
+
+  userId String                 @db.ObjectId
+  role   LedgerCollaboratorRole
+
+  // Who added this collaborator
+  addedByUserId String @db.ObjectId
+
+  addedAt   DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([ledgerId, userId]) // One role per user per ledger
+  @@index([userId])
+  @@index([ledgerId, role])
+}
+
+model LedgerStatusUpdate {
+  id       String @id @default(auto()) @map("_id") @db.ObjectId
+  ledgerId String @db.ObjectId
+  ledger   Ledger @relation(name: "LedgerStatusUpdates", fields: [ledgerId], references: [id], onDelete: Cascade)
+
+  actionId String?       @db.ObjectId // Optional: specific action this relates to
+  action   LedgerAction? @relation(name: "ActionStatusUpdates", fields: [actionId], references: [id], onDelete: Cascade)
+
+  type LedgerStatusUpdateType
+
+  // Actor metadata (from CurrentUser)
+  actorUserId String? @db.ObjectId // Null for system-generated updates
+  actorEmail  String?
+
+  // Human-readable message or structured data
+  message  String?
+  metadata Json? // Additional context (old/new values, etc.)
+
+  createdAt DateTime @default(now())
+
+  @@index([ledgerId, createdAt])
+  @@index([actionId, createdAt])
+  @@index([type, createdAt])
+}

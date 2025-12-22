@@ -20,6 +20,8 @@ import { HealthController } from "./health/health.controller";
 import { AppDataModule } from "./modules/app-data/app-data.module";
 import { LocationsModule } from "@/modules/locations/locations.module";
 import { FeedbackModule } from "@/modules/feedback/feedback.module";
+import { UnderworldModule } from "@/modules/underworld/underworld.module";
+import { LedgerModule } from "@/modules/ledger/ledger.module";
 
 @Module({
   imports: [
@@ -93,6 +95,8 @@ import { FeedbackModule } from "@/modules/feedback/feedback.module";
     LocationsModule,
     DecoratorModule,
     FeedbackModule,
+    UnderworldModule,
+    LedgerModule,
   ],
   controllers: [HealthController],
 })

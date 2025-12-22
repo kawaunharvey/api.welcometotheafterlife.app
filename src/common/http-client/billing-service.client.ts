@@ -197,6 +197,24 @@ export interface DeleteBeneficiaryResponse {
   deleted: boolean;
 }
 
+export interface WebhookEndpoint {
+  id: string;
+  serviceKey: string;
+  url: string;
+  signingSecret?: string | null;
+  tenantId?: string | null;
+  events: string[];
+  isActive: boolean;
+}
+
+export interface EnsureWebhookEndpointRequest {
+  serviceKey: string;
+  url: string;
+  signingSecret?: string;
+  events: string[];
+  tenantId?: string;
+}
+
 @Injectable()
 export class BillingClient {
   private readonly logger = new Logger(BillingClient.name);
@@ -231,6 +249,9 @@ export class BillingClient {
         status,
         data,
         message: axiosError.message,
+        url: axiosError.config?.url,
+        method: axiosError.config?.method,
+        responseHeaders: axiosError.response?.headers,
       });
 
       throw new HttpException(data || axiosError.message, status);
@@ -639,6 +660,64 @@ export class BillingClient {
       return response.data;
     } catch (error) {
       this.handleAxiosError("Failed to retrieve payout balance", error);
+    }
+  }
+
+  async ensureWebhookEndpoint(
+    request: EnsureWebhookEndpointRequest,
+  ): Promise<WebhookEndpoint | void> {
+    try {
+      const headers = await this.getHeaders();
+
+      const existing = await firstValueFrom(
+        this.httpService.get<WebhookEndpoint[]>(
+          `${this.baseUrl}/webhook-endpoints`,
+          {
+            headers,
+            params: {
+              serviceKey: request.serviceKey,
+              tenantId: request.tenantId,
+            },
+          },
+        ),
+      );
+
+      const match = existing.data.find(
+        (endpoint) => endpoint.url === request.url,
+      );
+
+      if (match) {
+        this.logger.debug("Webhook endpoint already registered", {
+          id: match.id,
+          url: match.url,
+        });
+        return match;
+      }
+
+      const response = await firstValueFrom(
+        this.httpService.post<WebhookEndpoint>(
+          `${this.baseUrl}/webhook-endpoints`,
+          {
+            serviceKey: request.serviceKey,
+            url: request.url,
+            signingSecret: request.signingSecret,
+            events: request.events,
+            tenantId: request.tenantId,
+            isActive: true,
+          },
+          { headers },
+        ),
+      );
+
+      this.logger.log("Webhook endpoint registered with billing", {
+        id: response.data.id,
+        url: response.data.url,
+        serviceKey: request.serviceKey,
+      });
+
+      return response.data;
+    } catch (error) {
+      this.handleAxiosError("Failed to ensure webhook endpoint", error);
     }
   }
 }

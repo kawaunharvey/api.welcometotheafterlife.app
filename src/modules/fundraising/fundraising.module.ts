@@ -9,6 +9,7 @@ import { PrismaModule } from "../../prisma/prisma.module";
 import { AuditModule } from "../audit/audit.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { FeedsModule } from "../feeds/feeds.module";
+import { BillingWebhookRegistrar } from "./billing-webhook.registrar";
 
 @Module({
   imports: [
@@ -22,7 +23,12 @@ import { FeedsModule } from "../feeds/feeds.module";
     }),
   ],
   controllers: [FundraisingController, BillingWebhookController],
-  providers: [FundraisingService, BillingWebhookService, BillingClient],
+  providers: [
+    FundraisingService,
+    BillingWebhookService,
+    BillingWebhookRegistrar,
+    BillingClient,
+  ],
   exports: [FundraisingService],
 })
 export class FundraisingModule {}

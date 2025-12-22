@@ -62,7 +62,9 @@ export class BillingWebhookService {
     private readonly feedsService: FeedsService,
   ) {
     this.webhookSecret =
-      this.configService.get("BILLING_WEBHOOK_SECRET") || "whsec_xxx";
+      this.configService.get("AFTERLIFE_WEBHOOK_SECRET") ||
+      this.configService.get("BILLING_WEBHOOK_SECRET") ||
+      "whsec_xxx";
   }
 
   async handleWebhook(payload: WebhookEventPayload): Promise<void> {
